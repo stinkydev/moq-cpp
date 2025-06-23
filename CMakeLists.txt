@@ -12,12 +12,11 @@ set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
 set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
 
 if(WIN32)
-    set(RUST_LIB_NAME libmoq_ffi.lib)
-    set(RUST_STATIC_LIB_NAME libmoq_ffi.lib)
+    set(RUST_LIB_NAME moq_ffi.lib)
 elseif(APPLE)
-    set(RUST_LIB_NAME libmoq_ffi.dylib)
+    set(RUST_LIB_NAME libmoq_ffi.a)
 else()
-    set(RUST_LIB_NAME libmoq_ffi.so)
+    set(RUST_LIB_NAME libmoq_ffi.a)
 endif()
 
 # Custom command to build the Rust library
@@ -34,12 +33,7 @@ add_custom_command(
 add_custom_target(rust_lib ALL DEPENDS ${RUST_LIB_DIR}/${RUST_LIB_NAME})
 
 # Create an imported library target
-if(WIN32)
-    add_library(moq_ffi STATIC IMPORTED)
-else()
-    add_library(moq_ffi SHARED IMPORTED)
-endif()
-
+add_library(moq_ffi STATIC IMPORTED)
 set_target_properties(moq_ffi PROPERTIES
     IMPORTED_LOCATION ${RUST_LIB_DIR}/${RUST_LIB_NAME}
 )
