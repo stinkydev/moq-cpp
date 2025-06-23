@@ -22,13 +22,15 @@ endif()
 
 # Custom command to build the Rust library
 add_custom_command(
-    OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME}
+    OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME} ${RUST_TARGET_DIR}/release/moq-ffi/include/moq_ffi.h
     COMMAND ${CARGO_EXECUTABLE} build --release --target-dir ${RUST_TARGET_DIR}
-    COMMAND ${CMAKE_COMMAND} -E echo "Checking for generated header file..."
-    COMMAND ${CMAKE_COMMAND} -E ls ${RUST_TARGET_DIR}/release/moq-ffi/include/ || true
+    COMMAND ${CMAKE_COMMAND} -E echo "Verifying generated files..."
+    COMMAND ${CMAKE_COMMAND} -E ls ${RUST_LIB_DIR}/${RUST_LIB_NAME}
+    COMMAND ${CMAKE_COMMAND} -E ls ${RUST_TARGET_DIR}/release/moq-ffi/include/moq_ffi.h
+    COMMAND ${CMAKE_COMMAND} -E echo "Rust FFI build completed successfully"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi
-    COMMENT "Building Rust FFI library"
-    BYPRODUCTS ${RUST_TARGET_DIR}/release/moq-ffi/include/moq_ffi.h
+    COMMENT "Building Rust FFI library and generating headers"
+    VERBATIM
 )
 
 # Create a target for the Rust library
@@ -49,16 +51,33 @@ endif()
 
 add_dependencies(moq_ffi rust_lib)
 
+# Verify C++ headers exist
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/client.h")
+    message(FATAL_ERROR "Required header cpp/include/moq/client.h not found")
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/session.h")
+    message(FATAL_ERROR "Required header cpp/include/moq/session.h not found")
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/moq.h")
+    message(FATAL_ERROR "Required header cpp/include/moq/moq.h not found")
+endif()
+
 # C++ wrapper library
 add_library(moq_cpp STATIC
     cpp/src/moq_client.cpp
     cpp/src/moq_session.cpp
 )
 
+# Set include directories with absolute paths
 target_include_directories(moq_cpp PUBLIC
-    cpp/include
-    ${RUST_TARGET_DIR}/release/moq-ffi/include  # Generated C headers
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>
+    $<BUILD_INTERFACE:${RUST_TARGET_DIR}/release/moq-ffi/include>
+    $<INSTALL_INTERFACE:include>
 )
+
+# Debug include paths
+message(STATUS "MOQ C++ include path: ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include")
+message(STATUS "MOQ FFI include path: ${RUST_TARGET_DIR}/release/moq-ffi/include")
 
 # Ensure headers are generated before compiling C++
 add_dependencies(moq_cpp rust_lib)

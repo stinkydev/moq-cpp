@@ -45,6 +45,26 @@ jobs:
     - name: Configure CMake
       run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       
+    - name: Debug headers before build
+      run: |
+        echo "Current working directory:"
+        pwd
+        echo "C++ headers in cpp/include/moq/:"
+        ls -la cpp/include/moq/ || echo "C++ headers not found"
+        echo "Checking if directories exist:"
+        test -d cpp/include/moq && echo "cpp/include/moq exists" || echo "cpp/include/moq missing"
+        echo "Full cpp/include structure:"
+        find cpp/include -type f -name "*.h" || echo "No header files found"
+      shell: bash
+      
+    - name: Build Rust library first (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        cd moq-ffi
+        cargo build --release --target-dir ../build/rust-target
+        echo "Rust build completed, checking headers:"
+        ls -la ../build/rust-target/release/moq-ffi/include/ || echo "No FFI headers found"
+      
     - name: Build
       run: cmake --build build --parallel
       
