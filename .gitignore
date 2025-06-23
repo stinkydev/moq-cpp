@@ -36,4 +36,4 @@ Thumbs.db
 
 # Generated files
 *.h.bak
-include/
+build/rust-target/*/include/
