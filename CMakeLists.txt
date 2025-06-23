@@ -24,9 +24,6 @@ endif()
 add_custom_command(
     OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME} ${RUST_TARGET_DIR}/release/moq-ffi/include/moq_ffi.h
     COMMAND ${CARGO_EXECUTABLE} build --release --target-dir ${RUST_TARGET_DIR}
-    COMMAND ${CMAKE_COMMAND} -E echo "Verifying generated files..."
-    COMMAND ${CMAKE_COMMAND} -E ls ${RUST_LIB_DIR}/${RUST_LIB_NAME}
-    COMMAND ${CMAKE_COMMAND} -E ls ${RUST_TARGET_DIR}/release/moq-ffi/include/moq_ffi.h
     COMMAND ${CMAKE_COMMAND} -E echo "Rust FFI build completed successfully"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi
     COMMENT "Building Rust FFI library and generating headers"
