@@ -8,6 +8,7 @@ namespace moq {
 
 /// Forward declarations
 class Session;
+class Track;
 
 /// Result enumeration matching the C FFI
 enum class Result {

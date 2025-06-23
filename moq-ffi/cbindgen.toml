@@ -12,8 +12,10 @@ documentation_style = "doxy"
 include = [
     "MoqClient",
     "MoqSession", 
+    "MoqTrack",
     "MoqResult",
-    "MoqClientConfig"
+    "MoqClientConfig",
+    "MoqDataCallback"
 ]
 
 [export.rename]
