@@ -20,12 +20,27 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+      
     - name: Install CMake
       uses: lukka/get-cmake@latest
       
-    - name: Setup vcpkg (Windows)
-      if: runner.os == 'Windows'
-      uses: lukka/run-vcpkg@v11
+    - name: Install Ninja (Ubuntu)
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y ninja-build
+      
+    - name: Install Ninja (macOS)
+      if: runner.os == 'macOS'
+      run: brew install ninja
       
     - name: Configure CMake
       run: cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -33,10 +48,18 @@ jobs:
     - name: Build
       run: cmake --build build --parallel
       
+    - name: List build artifacts
+      run: |
+        echo "Build directory contents:"
+        ls -la build/
+        echo "Rust target contents:"
+        find build/rust-target -name "*moq_ffi*" || echo "No moq_ffi files found"
+      shell: bash
+      
     - name: Test
       run: |
         cd build
-        if [ "$RUNNER_OS" == "Windows" ]; then
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
           ./moq_example.exe
         else
           ./moq_example
@@ -51,6 +74,19 @@ jobs:
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ubuntu-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ubuntu-cargo-
       
     - name: Run Rust tests
       run: cargo test --manifest-path moq-ffi/Cargo.toml

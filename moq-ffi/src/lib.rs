@@ -1,16 +1,15 @@
+use once_cell::sync::Lazy;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 use tokio::runtime::Runtime;
-use once_cell::sync::Lazy;
 
 use moq_native::client::{Client, ClientConfig};
 use url::Url;
 
 // Global runtime for async operations
-static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
-    Runtime::new().expect("Failed to create tokio runtime")
-});
+static RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Failed to create tokio runtime"));
 
 /// Opaque handle for the MOQ client
 #[repr(C)]
@@ -59,11 +58,11 @@ pub extern "C" fn moq_init() -> MoqResult {
 }
 
 /// Create a new MOQ client with the given configuration
-/// 
+///
 /// # Arguments
 /// * `config` - Configuration for the client
 /// * `client_out` - Output parameter for the created client handle
-/// 
+///
 /// # Returns
 /// * `MoqResult` indicating success or failure
 #[no_mangle]
@@ -76,7 +75,7 @@ pub extern "C" fn moq_client_new(
     }
 
     let config = unsafe { &*config };
-    
+
     // Convert C strings to Rust strings
     let bind_addr = if config.bind_addr.is_null() {
         "[::]:0"
@@ -88,7 +87,7 @@ pub extern "C" fn moq_client_new(
     };
 
     let mut client_config = ClientConfig::default();
-    
+
     // Parse bind address
     client_config.bind = match bind_addr.parse() {
         Ok(addr) => addr,
@@ -112,7 +111,9 @@ pub extern "C" fn moq_client_new(
     }
 
     // For now, just create a dummy client
-    let boxed_client = Box::new(MoqClient { _placeholder: 12345 });
+    let boxed_client = Box::new(MoqClient {
+        _placeholder: 12345,
+    });
     unsafe {
         *client_out = Box::into_raw(boxed_client);
     }
@@ -121,12 +122,12 @@ pub extern "C" fn moq_client_new(
 }
 
 /// Connect to a MOQ server
-/// 
+///
 /// # Arguments
 /// * `client` - Handle to the MOQ client
 /// * `url` - URL to connect to (as C string)
 /// * `session_out` - Output parameter for the created session handle
-/// 
+///
 /// # Returns
 /// * `MoqResult` indicating success or failure
 #[no_mangle]
@@ -140,14 +141,14 @@ pub extern "C" fn moq_client_connect(
     }
 
     let _client = unsafe { &*client };
-    
+
     let _url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
         Ok(url) => url,
         Err(_) => return MoqResult::InvalidArgument,
     };
 
     // Create a dummy session for now
-    let boxed_session = Box::new(MoqSession { 
+    let boxed_session = Box::new(MoqSession {
         connection_id: 42,
         is_connected: true,
     });
@@ -159,7 +160,7 @@ pub extern "C" fn moq_client_connect(
 }
 
 /// Free a MOQ client handle
-/// 
+///
 /// # Arguments
 /// * `client` - Handle to the MOQ client to free
 #[no_mangle]
@@ -172,7 +173,7 @@ pub extern "C" fn moq_client_free(client: *mut MoqClient) {
 }
 
 /// Free a MOQ session handle
-/// 
+///
 /// # Arguments
 /// * `session` - Handle to the MOQ session to free
 #[no_mangle]
@@ -185,10 +186,10 @@ pub extern "C" fn moq_session_free(session: *mut MoqSession) {
 }
 
 /// Check if a session is connected
-/// 
+///
 /// # Arguments
 /// * `session` - Handle to the MOQ session
-/// 
+///
 /// # Returns
 /// * true if connected, false otherwise
 #[no_mangle]
@@ -196,14 +197,12 @@ pub extern "C" fn moq_session_is_connected(session: *const MoqSession) -> bool {
     if session.is_null() {
         return false;
     }
-    
-    unsafe {
-        (*session).is_connected
-    }
+
+    unsafe { (*session).is_connected }
 }
 
 /// Close a MOQ session
-/// 
+///
 /// # Arguments
 /// * `session` - Handle to the MOQ session to close
 #[no_mangle]
@@ -211,16 +210,16 @@ pub extern "C" fn moq_session_close(session: *mut MoqSession) -> MoqResult {
     if session.is_null() {
         return MoqResult::InvalidArgument;
     }
-    
+
     unsafe {
         (*session).is_connected = false;
     }
-    
+
     MoqResult::Success
 }
 
 /// Get the last error message (thread-local)
-/// 
+///
 /// # Returns
 /// * Pointer to a null-terminated string containing the error message
 /// * The returned string is valid until the next call to any MOQ function
@@ -232,10 +231,10 @@ pub extern "C" fn moq_get_last_error() -> *const c_char {
 }
 
 /// Convert a MoqResult to a human-readable string
-/// 
+///
 /// # Arguments
 /// * `result` - The result code to convert
-/// 
+///
 /// # Returns
 /// * Pointer to a null-terminated string describing the result
 #[no_mangle]

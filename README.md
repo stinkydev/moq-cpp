@@ -1,12 +1,12 @@
 # MOQ C++ API
 
-A C++ wrapper around the [moq-native](https://github.com/kixelated/moq-rs) Rust library, providing a convenient C++ interface for Media over QUIC (MOQ) applications.
+A C++ wrapper around the [moq-native](https://github.com/kixelated/moq-rs) Rust library, providing a C++ interface for Media over QUIC (MOQ) applications.
 
 ## Overview
 
 This project provides:
 - **Rust FFI layer** (`moq-ffi`): C-compatible interface around moq-native
-- **C++ wrapper** (`cpp/`): Modern C++ classes and RAII semantics
+- **C++ wrapper** (`cpp/`): C++ classes and RAII semantics
 - **CMake build system**: Easy integration into C++ projects
 - **Examples**: Sample code demonstrating usage
 
@@ -51,7 +51,23 @@ sudo apt install build-essential cmake git curl
 
 ## Building
 
-### Quick Start
+#### Continuous Integration
+
+The project includes a CI/CD pipeline using GitHub Actions:
+
+- **Multi-platform builds**: Tests on Ubuntu, macOS, and Windows
+- **Rust toolchain**: Automatic installation and caching
+- **Code quality**: Formatting checks, linting with Clippy
+- **Build verification**: Compiles and runs the example application
+
+The CI pipeline automatically:
+1. Installs dependencies (Rust, CMake, Ninja)
+2. Caches Rust dependencies for faster builds
+3. Builds the project in release mode
+4. Runs the example to verify functionality
+5. Checks Rust code formatting and linting
+
+## Quick Start
 
 ```bash
 # Clone the repository

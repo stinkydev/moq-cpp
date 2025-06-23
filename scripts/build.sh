@@ -34,7 +34,13 @@ function configure_cmake() {
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
     
-    cmake .. -DCMAKE_BUILD_TYPE="$build_type"
+    # Use Ninja if available, otherwise fall back to Make
+    if command -v ninja >/dev/null 2>&1; then
+        cmake .. -G Ninja -DCMAKE_BUILD_TYPE="$build_type"
+    else
+        cmake .. -DCMAKE_BUILD_TYPE="$build_type"
+    fi
+    
     echo "✅ Configuration complete"
 }
 
@@ -42,10 +48,13 @@ function build_project() {
     echo "🔨 Building project..."
     cd "$BUILD_DIR"
     
-    if command -v ninja >/dev/null 2>&1; then
+    if [[ -f "build.ninja" ]]; then
         ninja
-    else
+    elif [[ -f "Makefile" ]]; then
         make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+    else
+        echo "❌ No build system found (neither ninja nor make)"
+        exit 1
     fi
     
     echo "✅ Build complete"

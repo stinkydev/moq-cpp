@@ -4,9 +4,7 @@ use std::path::PathBuf;
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let package_name = env::var("CARGO_PKG_NAME").unwrap();
-    let output_dir = target_dir()
-        .join(&package_name)
-        .join("include");
+    let output_dir = target_dir().join(&package_name).join("include");
 
     std::fs::create_dir_all(&output_dir).expect("Failed to create output directory");
 
