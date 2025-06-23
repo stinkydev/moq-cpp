@@ -79,10 +79,33 @@ jobs:
     - name: Test
       run: |
         cd build
+        echo "Contents of build directory:"
+        ls -la
+        echo "Looking for executables:"
+        find . -name "moq_example*" -type f || echo "No moq_example files found"
+        
         if [[ "$RUNNER_OS" == "Windows" ]]; then
-          ./moq_example.exe
+          if [ -f "./moq_example.exe" ]; then
+            echo "Running moq_example.exe..."
+            ./moq_example.exe
+          elif [ -f "./Release/moq_example.exe" ]; then
+            echo "Running Release/moq_example.exe..."
+            ./Release/moq_example.exe
+          elif [ -f "./Debug/moq_example.exe" ]; then
+            echo "Running Debug/moq_example.exe..."
+            ./Debug/moq_example.exe
+          else
+            echo "ERROR: moq_example.exe not found in expected locations"
+            exit 1
+          fi
         else
-          ./moq_example
+          if [ -f "./moq_example" ]; then
+            echo "Running moq_example..."
+            ./moq_example
+          else
+            echo "ERROR: moq_example not found"
+            exit 1
+          fi
         fi
       shell: bash
 

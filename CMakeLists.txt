@@ -12,8 +12,8 @@ set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
 set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
 
 if(WIN32)
-    set(RUST_LIB_NAME moq_ffi.dll.lib)
-    set(RUST_DLL_NAME moq_ffi.dll)
+    set(RUST_LIB_NAME libmoq_ffi.lib)
+    set(RUST_STATIC_LIB_NAME libmoq_ffi.lib)
 elseif(APPLE)
     set(RUST_LIB_NAME libmoq_ffi.dylib)
 else()
@@ -34,17 +34,15 @@ add_custom_command(
 add_custom_target(rust_lib ALL DEPENDS ${RUST_LIB_DIR}/${RUST_LIB_NAME})
 
 # Create an imported library target
-add_library(moq_ffi SHARED IMPORTED)
+if(WIN32)
+    add_library(moq_ffi STATIC IMPORTED)
+else()
+    add_library(moq_ffi SHARED IMPORTED)
+endif()
+
 set_target_properties(moq_ffi PROPERTIES
     IMPORTED_LOCATION ${RUST_LIB_DIR}/${RUST_LIB_NAME}
 )
-
-if(WIN32)
-    set_target_properties(moq_ffi PROPERTIES
-        IMPORTED_IMPLIB ${RUST_LIB_DIR}/${RUST_LIB_NAME}
-        IMPORTED_LOCATION ${RUST_LIB_DIR}/${RUST_DLL_NAME}
-    )
-endif()
 
 add_dependencies(moq_ffi rust_lib)
 
@@ -113,9 +111,3 @@ install(DIRECTORY cpp/include/
 install(FILES ${RUST_LIB_DIR}/${RUST_LIB_NAME}
     DESTINATION lib
 )
-
-if(WIN32 AND RUST_DLL_NAME)
-    install(FILES ${RUST_LIB_DIR}/${RUST_DLL_NAME}
-        DESTINATION bin
-    )
-endif()
