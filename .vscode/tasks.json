@@ -1,0 +1,16 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build and Run MOQ Example",
+			"type": "shell",
+			"command": "cd build && ninja && ./moq_example",
+			"group": "build",
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"args": []
+		}
+	]
+}
