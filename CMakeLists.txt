@@ -87,7 +87,7 @@ if(APPLE)
 elseif(UNIX)
     target_link_libraries(moq_cpp PUBLIC dl m)
 elseif(WIN32)
-    target_link_libraries(moq_cpp PUBLIC ws2_32 userenv advapi32)
+    target_link_libraries(moq_cpp PUBLIC ws2_32 userenv advapi32 ntdll kernel32 bcrypt)
 endif()
 
 # Installation
