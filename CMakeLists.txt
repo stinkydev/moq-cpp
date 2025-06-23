@@ -24,8 +24,11 @@ endif()
 add_custom_command(
     OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME}
     COMMAND ${CARGO_EXECUTABLE} build --release --target-dir ${RUST_TARGET_DIR}
+    COMMAND ${CMAKE_COMMAND} -E echo "Checking for generated header file..."
+    COMMAND ${CMAKE_COMMAND} -E ls ${RUST_TARGET_DIR}/release/moq-ffi/include/ || true
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi
     COMMENT "Building Rust FFI library"
+    BYPRODUCTS ${RUST_TARGET_DIR}/release/moq-ffi/include/moq_ffi.h
 )
 
 # Create a target for the Rust library
@@ -56,6 +59,9 @@ target_include_directories(moq_cpp PUBLIC
     cpp/include
     ${RUST_TARGET_DIR}/release/moq-ffi/include  # Generated C headers
 )
+
+# Ensure headers are generated before compiling C++
+add_dependencies(moq_cpp rust_lib)
 
 target_link_libraries(moq_cpp PUBLIC moq_ffi)
 

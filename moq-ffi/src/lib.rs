@@ -1,15 +1,6 @@
-use once_cell::sync::Lazy;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
-use tokio::runtime::Runtime;
-
-use moq_native::client::{Client, ClientConfig};
-use url::Url;
-
-// Global runtime for async operations
-static RUNTIME: Lazy<Runtime> =
-    Lazy::new(|| Runtime::new().expect("Failed to create tokio runtime"));
 
 /// Opaque handle for the MOQ client
 #[repr(C)]
@@ -50,10 +41,7 @@ pub struct MoqClientConfig {
 /// This should be called once before using any other functions
 #[no_mangle]
 pub extern "C" fn moq_init() -> MoqResult {
-    // Initialize tracing for logging
-    if let Err(_) = tracing_subscriber::fmt::try_init() {
-        // Already initialized, that's fine
-    }
+    // For now, just return success
     MoqResult::Success
 }
 
@@ -65,8 +53,14 @@ pub extern "C" fn moq_init() -> MoqResult {
 ///
 /// # Returns
 /// * `MoqResult` indicating success or failure
+///
+/// # Safety
+/// This function is unsafe because it dereferences raw pointers.
+/// The caller must ensure that:
+/// - `config` points to valid MoqClientConfig
+/// - `client_out` points to valid memory for a MoqClient pointer
 #[no_mangle]
-pub extern "C" fn moq_client_new(
+pub unsafe extern "C" fn moq_client_new(
     config: *const MoqClientConfig,
     client_out: *mut *mut MoqClient,
 ) -> MoqResult {
@@ -74,49 +68,28 @@ pub extern "C" fn moq_client_new(
         return MoqResult::InvalidArgument;
     }
 
-    let config = unsafe { &*config };
+    let config = &*config;
 
     // Convert C strings to Rust strings
     let bind_addr = if config.bind_addr.is_null() {
         "[::]:0"
     } else {
-        match unsafe { CStr::from_ptr(config.bind_addr) }.to_str() {
+        match CStr::from_ptr(config.bind_addr).to_str() {
             Ok(addr) => addr,
             Err(_) => return MoqResult::InvalidArgument,
         }
     };
 
-    let mut client_config = ClientConfig::default();
-
-    // Parse bind address
-    client_config.bind = match bind_addr.parse() {
-        Ok(addr) => addr,
-        Err(_) => return MoqResult::InvalidArgument,
-    };
-
-    // Set TLS options
-    client_config.tls.disable_verify = if config.tls_disable_verify {
-        Some(true)
-    } else {
-        None
-    };
-
-    // Set root certificate if provided
-    if !config.tls_root_cert_path.is_null() {
-        let root_path = match unsafe { CStr::from_ptr(config.tls_root_cert_path) }.to_str() {
-            Ok(path) => path,
-            Err(_) => return MoqResult::InvalidArgument,
-        };
-        client_config.tls.root = vec![root_path.into()];
+    // For now, just validate the address format by attempting to parse it
+    if bind_addr.parse::<std::net::SocketAddr>().is_err() {
+        return MoqResult::InvalidArgument;
     }
 
     // For now, just create a dummy client
     let boxed_client = Box::new(MoqClient {
         _placeholder: 12345,
     });
-    unsafe {
-        *client_out = Box::into_raw(boxed_client);
-    }
+    *client_out = Box::into_raw(boxed_client);
 
     MoqResult::Success
 }
@@ -130,8 +103,15 @@ pub extern "C" fn moq_client_new(
 ///
 /// # Returns
 /// * `MoqResult` indicating success or failure
+///
+/// # Safety
+/// This function is unsafe because it dereferences raw pointers.
+/// The caller must ensure that:
+/// - `client` points to a valid MoqClient
+/// - `url` points to a valid null-terminated C string
+/// - `session_out` points to valid memory for a MoqSession pointer
 #[no_mangle]
-pub extern "C" fn moq_client_connect(
+pub unsafe extern "C" fn moq_client_connect(
     client: *mut MoqClient,
     url: *const c_char,
     session_out: *mut *mut MoqSession,
@@ -140,9 +120,9 @@ pub extern "C" fn moq_client_connect(
         return MoqResult::InvalidArgument;
     }
 
-    let _client = unsafe { &*client };
+    let _client = &*client;
 
-    let _url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
+    let _url_str = match CStr::from_ptr(url).to_str() {
         Ok(url) => url,
         Err(_) => return MoqResult::InvalidArgument,
     };
@@ -152,9 +132,7 @@ pub extern "C" fn moq_client_connect(
         connection_id: 42,
         is_connected: true,
     });
-    unsafe {
-        *session_out = Box::into_raw(boxed_session);
-    }
+    *session_out = Box::into_raw(boxed_session);
 
     MoqResult::Success
 }
@@ -163,12 +141,14 @@ pub extern "C" fn moq_client_connect(
 ///
 /// # Arguments
 /// * `client` - Handle to the MOQ client to free
+///
+/// # Safety
+/// This function is unsafe because it dereferences a raw pointer.
+/// The caller must ensure that `client` is a valid pointer obtained from `moq_client_new`.
 #[no_mangle]
-pub extern "C" fn moq_client_free(client: *mut MoqClient) {
+pub unsafe extern "C" fn moq_client_free(client: *mut MoqClient) {
     if !client.is_null() {
-        unsafe {
-            let _ = Box::from_raw(client);
-        }
+        let _ = Box::from_raw(client);
     }
 }
 
@@ -176,12 +156,14 @@ pub extern "C" fn moq_client_free(client: *mut MoqClient) {
 ///
 /// # Arguments
 /// * `session` - Handle to the MOQ session to free
+///
+/// # Safety
+/// This function is unsafe because it dereferences a raw pointer.
+/// The caller must ensure that `session` is a valid pointer obtained from `moq_client_connect`.
 #[no_mangle]
-pub extern "C" fn moq_session_free(session: *mut MoqSession) {
+pub unsafe extern "C" fn moq_session_free(session: *mut MoqSession) {
     if !session.is_null() {
-        unsafe {
-            let _ = Box::from_raw(session);
-        }
+        let _ = Box::from_raw(session);
     }
 }
 
@@ -192,28 +174,34 @@ pub extern "C" fn moq_session_free(session: *mut MoqSession) {
 ///
 /// # Returns
 /// * true if connected, false otherwise
+///
+/// # Safety
+/// This function is unsafe because it dereferences a raw pointer.
+/// The caller must ensure that `session` is a valid pointer.
 #[no_mangle]
-pub extern "C" fn moq_session_is_connected(session: *const MoqSession) -> bool {
+pub unsafe extern "C" fn moq_session_is_connected(session: *const MoqSession) -> bool {
     if session.is_null() {
         return false;
     }
 
-    unsafe { (*session).is_connected }
+    (*session).is_connected
 }
 
 /// Close a MOQ session
 ///
 /// # Arguments
 /// * `session` - Handle to the MOQ session to close
+///
+/// # Safety
+/// This function is unsafe because it dereferences a raw pointer.
+/// The caller must ensure that `session` is a valid pointer.
 #[no_mangle]
-pub extern "C" fn moq_session_close(session: *mut MoqSession) -> MoqResult {
+pub unsafe extern "C" fn moq_session_close(session: *mut MoqSession) -> MoqResult {
     if session.is_null() {
         return MoqResult::InvalidArgument;
     }
 
-    unsafe {
-        (*session).is_connected = false;
-    }
+    (*session).is_connected = false;
 
     MoqResult::Success
 }
