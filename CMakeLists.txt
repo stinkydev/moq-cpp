@@ -96,6 +96,10 @@ target_link_libraries(moq_cpp PUBLIC moq_ffi)
 add_executable(moq_clock_example examples/cpp/clock_example.cpp)
 target_link_libraries(moq_clock_example moq_cpp)
 
+# Test executable for CI
+add_executable(moq_test test/basic_test.cpp)
+target_link_libraries(moq_test moq_cpp)
+
 # Find threading library
 find_package(Threads REQUIRED)
 target_link_libraries(moq_cpp PUBLIC Threads::Threads)
@@ -110,7 +114,7 @@ elseif(WIN32)
 endif()
 
 # Installation
-install(TARGETS moq_cpp moq_clock_example
+install(TARGETS moq_cpp moq_clock_example moq_test
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
