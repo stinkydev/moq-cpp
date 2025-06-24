@@ -10,18 +10,47 @@ This project provides:
 - **CMake build system**: Easy integration into C++ projects
 - **Examples**: Sample code demonstrating usage
 
+## MOQ Concepts
+
+### Data Hierarchy
+
+MOQ organizes data in a hierarchical structure:
+
+```
+Broadcast
+  └── Track (named stream within broadcast)
+      └── Group (sequence of related frames)
+          └── Frame (individual data packet)
+```
+
+**Broadcast**: A collection of related tracks (e.g., "clock" broadcast)
+**Track**: A named stream within a broadcast (e.g., "seconds" track)  
+**Group**: A sequence number-ordered collection of frames (e.g., data for one minute)
+**Frame**: Individual data packets within a group (e.g., each second update)
+
+### Producer/Consumer Pattern
+
+- **Producer**: Publishes data to tracks using `BroadcastProducer` → `TrackProducer` → `GroupProducer`
+- **Consumer**: Subscribes to tracks using `BroadcastConsumer` → `TrackConsumer` → `GroupConsumer`
+
+### Sequence Ordering
+
+- **Groups** are identified by sequence numbers for ordered delivery
+- **Frames** within a group maintain their order
+- Consumers can process groups as they arrive or wait for specific sequence numbers
+
 ## Architecture
 
 ```
-┌─────────────────┐
+┌─────────────────────┐
 │   C++ Application   │
-├─────────────────┤
+├─────────────────────┤
 │   C++ Wrapper       │  <- moq::Client, moq::Session classes
-├─────────────────┤
+├─────────────────────┤
 │   C FFI Layer       │  <- moq_client_new, moq_client_connect, etc.
-├─────────────────┤
+├─────────────────────┤
 │   Rust moq-native   │  <- Original moq-native library
-└─────────────────┘
+└─────────────────────┘
 ```
 
 ## Prerequisites
@@ -143,6 +172,171 @@ int main() {
 }
 ```
 
+### Publishing Data (Clock Example)
+
+```cpp
+#include <moq/moq.h>
+#include <iostream>
+#include <chrono>
+#include <thread>
+
+int main() {
+    // Initialize and connect (same as basic example)
+    auto client = moq::Client::create(config);
+    auto session = client->connect("https://moq.sesame-streams.com:4443");
+
+    // Define track information
+    moq::Track track;
+    track.name = "seconds";
+    track.priority = 0;
+
+    // Create broadcast producer
+    auto broadcast_producer = std::make_shared<moq::BroadcastProducer>();
+    
+    // Create track producer
+    auto track_producer = broadcast_producer->createTrack(track);
+    if (!track_producer) {
+        std::cerr << "Failed to create track producer" << std::endl;
+        return 1;
+    }
+
+    // Publish the broadcast
+    if (!session->publish("clock", broadcast_producer->getConsumable())) {
+        std::cerr << "Failed to publish broadcast" << std::endl;
+        return 1;
+    }
+
+    // Publishing loop
+    uint64_t sequence = 0;
+    while (true) {
+        // Create a new group
+        auto group = track_producer->createGroup(sequence++);
+        if (!group) {
+            std::cerr << "Failed to create group" << std::endl;
+            break;
+        }
+
+        // Write timestamp data
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        std::string timestamp = std::ctime(&time_t);
+        
+        if (!group->writeFrame(timestamp)) {
+            std::cerr << "Failed to write frame" << std::endl;
+            break;
+        }
+
+        // Finish the group
+        group->finish();
+
+        // Wait before next update
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    return 0;
+}
+```
+
+### Consuming Data (Clock Example)
+
+```cpp
+#include <moq/moq.h>
+#include <iostream>
+
+int main() {
+    // Initialize and connect (same as basic example)
+    auto client = moq::Client::create(config);
+    auto session = client->connect("https://moq.sesame-streams.com:4443");
+
+    // Define track to subscribe to
+    moq::Track track;
+    track.name = "seconds";
+    track.priority = 0;
+
+    // Consume the broadcast
+    auto broadcast_consumer = session->consume("clock");
+    if (!broadcast_consumer) {
+        std::cerr << "Failed to consume broadcast" << std::endl;
+        return 1;
+    }
+
+    // Subscribe to the track
+    auto track_consumer = broadcast_consumer->subscribeTrack(track);
+    if (!track_consumer) {
+        std::cerr << "Failed to subscribe to track" << std::endl;
+        return 1;
+    }
+
+    // Consumption loop
+    while (true) {
+        // Get next group
+        auto group_future = track_consumer->nextGroup();
+        auto group = group_future.get();
+        
+        if (!group) {
+            std::cout << "No more groups available" << std::endl;
+            break;
+        }
+
+        // Read frames from the group
+        while (true) {
+            auto frame_future = group->readFrame();
+            auto frame_data = frame_future.get();
+            
+            if (!frame_data) {
+                break; // No more frames in this group
+            }
+
+            // Convert to string and display
+            std::string timestamp(frame_data->begin(), frame_data->end());
+            std::cout << "Received: " << timestamp << std::endl;
+        }
+    }
+
+    return 0;
+}
+```
+
+### Advanced Usage: Multi-Frame Groups
+
+```cpp
+// Publishing multiple frames per group
+auto group = track_producer->createGroup(sequence_number);
+
+// Write base data
+group->writeFrame("Header: ");
+
+// Write multiple data frames
+for (int i = 0; i < 10; i++) {
+    std::string data = "Frame " + std::to_string(i);
+    group->writeFrame(data);
+}
+
+// Always finish the group
+group->finish();
+```
+
+```cpp
+// Consuming multiple frames per group
+auto group = group_future.get();
+
+// Read the header frame
+auto header_future = group->readFrame();
+auto header_data = header_future.get();
+std::string header(header_data->begin(), header_data->end());
+
+// Read remaining frames
+while (true) {
+    auto frame_future = group->readFrame();
+    auto frame_data = frame_future.get();
+    
+    if (!frame_data) break; // No more frames
+    
+    std::string frame(frame_data->begin(), frame_data->end());
+    std::cout << header << frame << std::endl;
+}
+```
+
 ### Integration with Existing Projects
 
 #### Using CMake FetchContent
@@ -170,7 +364,7 @@ target_link_libraries(your_target PRIVATE moq::moq_cpp)
 
 ## API Reference
 
-### Classes
+### Core Classes
 
 #### `moq::Client`
 Main client class for MOQ connections.
@@ -188,6 +382,8 @@ Represents an active connection to a MOQ server.
 **Methods:**
 - `bool isConnected() const` - Check if the session is active
 - `void close()` - Close the session
+- `bool publish(const std::string& broadcast_name, std::shared_ptr<BroadcastProducer> producer)` - Publish a broadcast
+- `std::unique_ptr<BroadcastConsumer> consume(const std::string& broadcast_name)` - Consume a broadcast
 
 #### `moq::ClientConfig`
 Configuration structure for the client.
@@ -196,6 +392,66 @@ Configuration structure for the client.
 - `std::string bind_addr` - Local bind address (default: "[::]:0")
 - `bool tls_disable_verify` - Disable TLS verification (default: false)
 - `std::string tls_root_cert_path` - Path to custom root certificate
+
+### Broadcast API
+
+#### `moq::BroadcastProducer`
+Manages publishing multiple tracks within a broadcast.
+
+**Methods:**
+- `BroadcastProducer()` - Constructor
+- `~BroadcastProducer()` - Destructor
+- `std::unique_ptr<TrackProducer> createTrack(const Track& track)` - Create a track producer for the given track
+- `std::shared_ptr<BroadcastProducer> getConsumable()` - Get a consumable version of this producer for publishing
+
+#### `moq::BroadcastConsumer`
+Manages consuming multiple tracks from a broadcast.
+
+**Methods:**
+- `~BroadcastConsumer()` - Destructor  
+- `std::unique_ptr<TrackConsumer> subscribeTrack(const Track& track)` - Subscribe to a specific track in the broadcast
+
+### Track API
+
+#### `moq::Track`
+Track information structure.
+
+**Fields:**
+- `std::string name` - Track name
+- `uint8_t priority` - Track priority (default: 0)
+
+#### `moq::TrackProducer`
+Publishes data to a track organized in groups.
+
+**Methods:**
+- `~TrackProducer()` - Destructor
+- `std::unique_ptr<GroupProducer> createGroup(uint64_t sequence_number)` - Create a new group for publishing data
+
+#### `moq::TrackConsumer`
+Consumes data from a track organized in groups.
+
+**Methods:**
+- `~TrackConsumer()` - Destructor
+- `std::future<std::unique_ptr<GroupConsumer>> nextGroup()` - Get the next group of data from the track
+
+### Group API
+
+#### `moq::GroupProducer`
+Publishes frame data within a group.
+
+**Methods:**
+- `~GroupProducer()` - Destructor
+- `bool writeFrame(const std::vector<uint8_t>& data)` - Write frame data as bytes
+- `bool writeFrame(const std::string& data)` - Write frame data as string
+- `bool writeFrame(const uint8_t* data, size_t size)` - Write frame data from raw pointer
+- `void finish()` - Mark group as complete (no more frames will be written)
+
+#### `moq::GroupConsumer`
+Consumes frame data within a group.
+
+**Methods:**
+- `~GroupConsumer()` - Destructor
+- `std::future<std::optional<std::vector<uint8_t>>> readFrame()` - Read the next frame from the group
 
 ### Error Handling
 
