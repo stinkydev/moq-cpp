@@ -37,3 +37,4 @@ Thumbs.db
 # Generated files
 *.h.bak
 build/rust-target/*/include/
+moq-ffi/include/moq_ffi.h
