@@ -2,6 +2,19 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    // Tell Cargo about Windows system libraries needed by dependencies
+    #[cfg(target_os = "windows")]
+    {
+        println!("cargo:rustc-link-lib=crypt32");
+        println!("cargo:rustc-link-lib=secur32");
+        println!("cargo:rustc-link-lib=ncrypt");
+        println!("cargo:rustc-link-lib=kernel32");
+        println!("cargo:rustc-link-lib=advapi32");
+        println!("cargo:rustc-link-lib=ws2_32");
+        println!("cargo:rustc-link-lib=userenv");
+        println!("cargo:rustc-link-lib=bcrypt");
+    }
+
     // Always try to generate header with cbindgen
     if let Err(e) = generate_cbindgen_header() {
         eprintln!("cbindgen failed: {}", e);

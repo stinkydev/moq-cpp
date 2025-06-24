@@ -110,7 +110,11 @@ if(APPLE)
 elseif(UNIX)
     target_link_libraries(moq_cpp PUBLIC dl m)
 elseif(WIN32)
-    target_link_libraries(moq_cpp PUBLIC ws2_32 userenv advapi32 ntdll kernel32 bcrypt)
+    # Windows system libraries needed for Rust dependencies (schannel, rustls_platform_verifier)
+    target_link_libraries(moq_cpp PUBLIC 
+        ws2_32 userenv advapi32 ntdll kernel32 bcrypt 
+        crypt32 secur32 ncrypt ole32 shell32
+    )
 endif()
 
 # Installation
