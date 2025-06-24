@@ -10,10 +10,13 @@ fn main() {
     // Copy the manual header instead of using cbindgen
     let manual_header_src = PathBuf::from("include/moq_ffi_manual.h");
     let manual_header_dst = output_dir.join("moq_ffi.h");
-    
-    println!("Copying header from {:?} to {:?}", manual_header_src, manual_header_dst);
+
+    println!(
+        "Copying header from {:?} to {:?}",
+        manual_header_src, manual_header_dst
+    );
     std::fs::copy(&manual_header_src, &manual_header_dst).expect("Failed to copy manual header");
-    
+
     // Verify the file was copied
     if manual_header_dst.exists() {
         println!("Header successfully copied to {:?}", manual_header_dst);

@@ -1,32 +1,27 @@
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::collections::HashMap;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
-use std::sync::{Arc, Mutex, LazyLock};
-use std::time::Duration;
-use tokio::{
-    runtime::Runtime,
-    sync::{mpsc, oneshot},
-};
-use futures::FutureExt;
+use std::sync::{LazyLock, Mutex};
+use tokio::runtime::Runtime;
 use url::Url;
-use anyhow::Result;
 
 // Import MOQ libraries
 use moq_lite::*;
-use moq_lite::coding::Bytes;
-use moq_native::ClientConfig;
 
 /// Global async runtime for handling MOQ operations
-static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-    Runtime::new().expect("Failed to create Tokio runtime")
-});
+static RUNTIME: LazyLock<Runtime> =
+    LazyLock::new(|| Runtime::new().expect("Failed to create Tokio runtime"));
 
 /// Global storage for all MOQ handles
 static HANDLES: LazyLock<Mutex<HandleStorage>> = LazyLock::new(|| Mutex::new(HandleStorage::new()));
 
 /// Global storage for allocated memory pointers and their sizes
-static MEMORY_TRACKER: LazyLock<Mutex<HashMap<usize, usize>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static MEMORY_TRACKER: LazyLock<Mutex<HashMap<usize, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// ID counter for all handles
 static ID_COUNTER: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(1));
@@ -64,6 +59,7 @@ struct ClientData {
 }
 
 /// Session data
+#[allow(dead_code)]
 struct SessionData {
     client_id: u64,
     url: String,
@@ -78,6 +74,7 @@ struct BroadcastProducerData {
 }
 
 /// Broadcast consumer data
+#[allow(dead_code)]
 struct BroadcastConsumerData {
     session_id: u64,
     name: String,
@@ -86,6 +83,7 @@ struct BroadcastConsumerData {
 }
 
 /// Track producer data
+#[allow(dead_code)]
 struct TrackProducerData {
     broadcast_id: u64,
     name: String,
@@ -95,6 +93,7 @@ struct TrackProducerData {
 }
 
 /// Track consumer data
+#[allow(dead_code)]
 struct TrackConsumerData {
     broadcast_id: u64,
     name: String,
@@ -104,6 +103,7 @@ struct TrackConsumerData {
 }
 
 /// Group producer data
+#[allow(dead_code)]
 struct GroupProducerData {
     track_id: u64,
     sequence: u64,
@@ -112,6 +112,7 @@ struct GroupProducerData {
 }
 
 /// Group consumer data
+#[allow(dead_code)]
 struct GroupConsumerData {
     track_id: u64,
     sequence: u64,
@@ -210,11 +211,16 @@ pub extern "C" fn moq_init() -> MoqResult {
     LazyLock::force(&HANDLES);
     LazyLock::force(&MEMORY_TRACKER);
     LazyLock::force(&ID_COUNTER);
-    
+
     MoqResult::Success
 }
 
 /// Create a new MOQ client
+///
+/// # Safety
+/// This function dereferences raw pointers and must be called with valid pointers.
+/// The `config` pointer must point to a valid MoqClientConfig struct, and
+/// `client_out` must point to a valid location to store the client pointer.
 #[no_mangle]
 pub unsafe extern "C" fn moq_client_new(
     config: *const MoqClientConfig,
@@ -243,15 +249,19 @@ pub unsafe extern "C" fn moq_client_new(
             Ok(path) => Some(path.to_string()),
             Err(_) => return MoqResult::InvalidArgument,
         }
+    }; // Create MOQ native client config
+    #[allow(clippy::field_reassign_with_default)]
+    let client_config = {
+        let mut moq_config = moq_native::ClientConfig::default();
+        moq_config.bind = bind_addr
+            .parse()
+            .unwrap_or_else(|_| "[::]:0".parse().unwrap());
+        moq_config.tls.disable_verify = Some(config.tls_disable_verify);
+        if let Some(cert_path) = tls_root_cert_path {
+            moq_config.tls.root = vec![cert_path.into()];
+        }
+        moq_config
     };
-
-    // Create MOQ native client config
-    let mut client_config = moq_native::ClientConfig::default();
-    client_config.bind = bind_addr.parse().unwrap_or_else(|_| "[::]:0".parse().unwrap());
-    client_config.tls.disable_verify = Some(config.tls_disable_verify);
-    if let Some(cert_path) = tls_root_cert_path {
-        client_config.tls.root = vec![cert_path.into()];
-    }
 
     // Initialize the client
     let client = match RUNTIME.block_on(async { client_config.init() }) {
@@ -339,7 +349,7 @@ pub unsafe extern "C" fn moq_client_connect(
 pub unsafe extern "C" fn moq_client_free(client: *mut MoqClient) {
     if !client.is_null() {
         let client = Box::from_raw(client);
-        
+
         // Remove from storage
         let mut handles = HANDLES.lock().unwrap();
         handles.clients.remove(&client.id);
@@ -351,7 +361,7 @@ pub unsafe extern "C" fn moq_client_free(client: *mut MoqClient) {
 pub unsafe extern "C" fn moq_session_free(session: *mut MoqSession) {
     if !session.is_null() {
         let session = Box::from_raw(session);
-        
+
         // Remove from storage
         let mut handles = HANDLES.lock().unwrap();
         handles.sessions.remove(&session.id);
@@ -367,7 +377,7 @@ pub unsafe extern "C" fn moq_session_is_connected(session: *const MoqSession) ->
 
     let session = &*session;
     let handles = HANDLES.lock().unwrap();
-    
+
     // If the session exists in our handle storage, consider it connected
     handles.sessions.contains_key(&session.id)
 }
@@ -381,7 +391,7 @@ pub unsafe extern "C" fn moq_session_close(session: *mut MoqSession) -> MoqResul
 
     let session = &*session;
     let mut handles = HANDLES.lock().unwrap();
-    
+
     if handles.sessions.remove(&session.id).is_some() {
         MoqResult::Success
     } else {
@@ -408,7 +418,9 @@ pub extern "C" fn moq_broadcast_producer_new(
     // Store the producer data
     {
         let mut handles = HANDLES.lock().unwrap();
-        handles.broadcast_producers.insert(producer_id, producer_data);
+        handles
+            .broadcast_producers
+            .insert(producer_id, producer_data);
     }
 
     // Create and return the producer handle
@@ -444,7 +456,7 @@ pub unsafe extern "C" fn moq_broadcast_producer_create_track(
     };
 
     let track_id = next_id();
-    
+
     // Create the real MOQ track
     let moq_track = Track {
         name: track_name.clone(),
@@ -453,17 +465,17 @@ pub unsafe extern "C" fn moq_broadcast_producer_create_track(
 
     let track_producer = {
         let mut handles = HANDLES.lock().unwrap();
-        if let Some(broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
+        if let Some(_broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
             // Need to create the track within the Tokio runtime context
             // Drop the mutex temporarily to avoid deadlock during block_on
-            
+
             // Clone the track for use in the async block
             let track_clone = moq_track.clone();
-            
+
             // We need to handle this differently since create() spawns tasks
             // For now, let's try to call it directly and see if we can make it work
             drop(handles); // Release the mutex before the potentially blocking operation
-            
+
             // Use the runtime to ensure we're in the right context
             let track_result = RUNTIME.block_on(async {
                 // Re-acquire the lock inside the async block
@@ -474,7 +486,7 @@ pub unsafe extern "C" fn moq_broadcast_producer_create_track(
                     Err(())
                 }
             });
-            
+
             match track_result {
                 Ok(producer) => producer,
                 Err(_) => return MoqResult::InvalidArgument,
@@ -496,7 +508,7 @@ pub unsafe extern "C" fn moq_broadcast_producer_create_track(
     {
         let mut handles = HANDLES.lock().unwrap();
         handles.track_producers.insert(track_id, track_data);
-        
+
         if let Some(broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
             broadcast.tracks.push(track_id);
         } else {
@@ -533,24 +545,24 @@ pub unsafe extern "C" fn moq_session_publish(
     // Publish the broadcast on the session
     {
         let mut handles = HANDLES.lock().unwrap();
-        
+
         // Validate session exists
         if !handles.sessions.contains_key(&session.id) {
             return MoqResult::InvalidArgument;
         }
-        
-        // Get the broadcast consumer 
+
+        // Get the broadcast consumer
         let consumer = if let Some(broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
             broadcast.name = name.clone();
             broadcast.producer.consume()
         } else {
             return MoqResult::InvalidArgument;
         };
-        
+
         // Clone the data we need and drop the lock to avoid deadlock
         let session_id = session.id;
         drop(handles);
-        
+
         // Use the runtime to ensure we're in the right context for any async operations
         RUNTIME.block_on(async {
             let mut handles = HANDLES.lock().unwrap();
@@ -560,7 +572,7 @@ pub unsafe extern "C" fn moq_session_publish(
             }
         });
     }
-    
+
     MoqResult::Success
 }
 
@@ -584,10 +596,10 @@ pub unsafe extern "C" fn moq_session_consume(
 
     // Get the broadcast consumer from the session
     let consumer = {
-        let mut handles = HANDLES.lock().unwrap();
+        let handles = HANDLES.lock().unwrap();
         let session_id = session.id;
         drop(handles); // Release lock before async operation
-        
+
         // Use the runtime to ensure we're in the right context for any async operations
         RUNTIME.block_on(async {
             let mut handles = HANDLES.lock().unwrap();
@@ -598,7 +610,7 @@ pub unsafe extern "C" fn moq_session_consume(
             }
         })
     };
-    
+
     let consumer = match consumer {
         Some(c) => c,
         None => return MoqResult::InvalidArgument,
@@ -615,7 +627,9 @@ pub unsafe extern "C" fn moq_session_consume(
     // Store the consumer data
     {
         let mut handles = HANDLES.lock().unwrap();
-        handles.broadcast_consumers.insert(consumer_id, consumer_data);
+        handles
+            .broadcast_consumers
+            .insert(consumer_id, consumer_data);
     }
 
     // Create and return the consumer handle
@@ -649,7 +663,7 @@ pub unsafe extern "C" fn moq_broadcast_consumer_subscribe_track(
     };
 
     let track_id = next_id();
-    
+
     // Create the real MOQ track and subscribe
     let moq_track = Track {
         name: track_name.clone(),
@@ -677,7 +691,7 @@ pub unsafe extern "C" fn moq_broadcast_consumer_subscribe_track(
     {
         let mut handles = HANDLES.lock().unwrap();
         handles.track_consumers.insert(track_id, track_data);
-        
+
         if let Some(broadcast) = handles.broadcast_consumers.get_mut(&consumer.id) {
             broadcast.tracks.push(track_id);
         } else {
@@ -706,7 +720,7 @@ pub unsafe extern "C" fn moq_track_producer_create_group(
     let track = &*track;
 
     let group_id = next_id();
-    
+
     // Create the real MOQ group
     let group_producer = {
         let mut handles = HANDLES.lock().unwrap();
@@ -732,7 +746,7 @@ pub unsafe extern "C" fn moq_track_producer_create_group(
     {
         let mut handles = HANDLES.lock().unwrap();
         handles.group_producers.insert(group_id, group_data);
-        
+
         if let Some(track_data) = handles.track_producers.get_mut(&track.id) {
             track_data.groups.push(group_id);
         } else {
@@ -773,7 +787,7 @@ pub unsafe extern "C" fn moq_group_producer_write_frame(
             if group_data.finished {
                 return MoqResult::InvalidArgument; // Can't write to finished group
             }
-            
+
             // write_frame returns () in moq-lite
             group_data.producer.write_frame(frame_data);
             MoqResult::Success
@@ -781,7 +795,7 @@ pub unsafe extern "C" fn moq_group_producer_write_frame(
             MoqResult::InvalidArgument
         }
     };
-    
+
     result
 }
 
@@ -824,9 +838,7 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
         let mut handles = HANDLES.lock().unwrap();
         if let Some(track_data) = handles.track_consumers.get_mut(&track.id) {
             // Use block_on to handle the async operation
-            match RUNTIME.block_on(async {
-                track_data.consumer.next_group().await
-            }) {
+            match RUNTIME.block_on(async { track_data.consumer.next_group().await }) {
                 Ok(Some(group)) => Some(group),
                 Ok(None) => None,
                 Err(_) => None,
@@ -852,7 +864,7 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
             {
                 let mut handles = HANDLES.lock().unwrap();
                 handles.group_consumers.insert(group_id, group_data);
-                
+
                 if let Some(track_data) = handles.track_consumers.get_mut(&track.id) {
                     track_data.groups.push(group_id);
                 }
@@ -890,9 +902,7 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
         let mut handles = HANDLES.lock().unwrap();
         if let Some(group_data) = handles.group_consumers.get_mut(&group.id) {
             // Use block_on to handle the async operation
-            match RUNTIME.block_on(async {
-                group_data.consumer.read_frame().await
-            }) {
+            match RUNTIME.block_on(async { group_data.consumer.read_frame().await }) {
                 Ok(Some(frame)) => Some(frame),
                 Ok(None) => None,
                 Err(_) => None,
@@ -915,19 +925,19 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
                 if ptr.is_null() {
                     return MoqResult::GeneralError;
                 }
-                
+
                 std::ptr::copy_nonoverlapping(frame_data.as_ptr(), ptr, len);
-                
+
                 // Track the allocation
                 {
                     let mut tracker = MEMORY_TRACKER.lock().unwrap();
                     tracker.insert(ptr as usize, len);
                 }
-                
+
                 *data_out = ptr;
                 *data_len_out = len;
             }
-            
+
             MoqResult::Success
         }
         None => {
@@ -1023,7 +1033,7 @@ pub extern "C" fn moq_result_to_string(result: MoqResult) -> *const c_char {
         MoqResult::DnsError => "DNS error",
         MoqResult::GeneralError => "General error",
     };
-    
+
     message.as_ptr() as *const c_char
 }
 
@@ -1041,7 +1051,7 @@ pub unsafe extern "C" fn moq_spawn_task(
         let user_data_ptr = user_data_addr as *mut std::os::raw::c_void;
         callback(user_data_ptr);
     });
-    
+
     MoqResult::Success
 }
 
