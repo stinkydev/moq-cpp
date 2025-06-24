@@ -22,7 +22,7 @@ fn main() {
         eprintln!("Please check that all exported functions have proper #[no_mangle] and 'extern \"C\"' declarations.");
         panic!("cbindgen header generation failed");
     }
-    
+
     println!("cargo:rerun-if-changed=cbindgen.toml");
     println!("cargo:rerun-if-changed=src/lib.rs");
 }
@@ -31,7 +31,7 @@ fn generate_cbindgen_header() -> Result<(), Box<dyn std::error::Error>> {
     let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
     let package_name = env::var("CARGO_PKG_NAME")?;
     let output_dir = target_dir().join(&package_name).join("include");
-    
+
     // Also put header in source directory for development
     let source_include_dir = PathBuf::from(&crate_dir).join("include");
 
@@ -39,12 +39,12 @@ fn generate_cbindgen_header() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&source_include_dir)?;
 
     let config = cbindgen::Config::from_file("cbindgen.toml")?;
-    
+
     let header = cbindgen::Builder::new()
         .with_crate(crate_dir)
         .with_config(config)
         .generate()?;
-    
+
     // Write to both target directory and source directory
     header.write_to_file(output_dir.join("moq_ffi.h"));
     header.write_to_file(source_include_dir.join("moq_ffi.h"));
