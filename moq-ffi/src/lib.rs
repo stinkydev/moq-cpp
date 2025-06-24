@@ -454,7 +454,31 @@ pub unsafe extern "C" fn moq_broadcast_producer_create_track(
     let track_producer = {
         let mut handles = HANDLES.lock().unwrap();
         if let Some(broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
-            broadcast.producer.create(moq_track)
+            // Need to create the track within the Tokio runtime context
+            // Drop the mutex temporarily to avoid deadlock during block_on
+            
+            // Clone the track for use in the async block
+            let track_clone = moq_track.clone();
+            
+            // We need to handle this differently since create() spawns tasks
+            // For now, let's try to call it directly and see if we can make it work
+            drop(handles); // Release the mutex before the potentially blocking operation
+            
+            // Use the runtime to ensure we're in the right context
+            let track_result = RUNTIME.block_on(async {
+                // Re-acquire the lock inside the async block
+                let mut handles = HANDLES.lock().unwrap();
+                if let Some(broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
+                    Ok(broadcast.producer.create(track_clone))
+                } else {
+                    Err(())
+                }
+            });
+            
+            match track_result {
+                Ok(producer) => producer,
+                Err(_) => return MoqResult::InvalidArgument,
+            }
         } else {
             return MoqResult::InvalidArgument;
         }
@@ -523,10 +547,18 @@ pub unsafe extern "C" fn moq_session_publish(
             return MoqResult::InvalidArgument;
         };
         
-        // Now publish it on the session
-        if let Some(session_data) = handles.sessions.get_mut(&session.id) {
-            session_data.session.publish(name, consumer);
-        }
+        // Clone the data we need and drop the lock to avoid deadlock
+        let session_id = session.id;
+        drop(handles);
+        
+        // Use the runtime to ensure we're in the right context for any async operations
+        RUNTIME.block_on(async {
+            let mut handles = HANDLES.lock().unwrap();
+            if let Some(session_data) = handles.sessions.get_mut(&session_id) {
+                // session.publish() may spawn async tasks internally
+                session_data.session.publish(name, consumer);
+            }
+        });
     }
     
     MoqResult::Success
@@ -553,11 +585,23 @@ pub unsafe extern "C" fn moq_session_consume(
     // Get the broadcast consumer from the session
     let consumer = {
         let mut handles = HANDLES.lock().unwrap();
-        if let Some(session_data) = handles.sessions.get_mut(&session.id) {
-            session_data.session.consume(&name)
-        } else {
-            return MoqResult::InvalidArgument;
-        }
+        let session_id = session.id;
+        drop(handles); // Release lock before async operation
+        
+        // Use the runtime to ensure we're in the right context for any async operations
+        RUNTIME.block_on(async {
+            let mut handles = HANDLES.lock().unwrap();
+            if let Some(session_data) = handles.sessions.get_mut(&session_id) {
+                Some(session_data.session.consume(&name))
+            } else {
+                None
+            }
+        })
+    };
+    
+    let consumer = match consumer {
+        Some(c) => c,
+        None => return MoqResult::InvalidArgument,
     };
 
     let consumer_id = next_id();
@@ -723,7 +767,7 @@ pub unsafe extern "C" fn moq_group_producer_write_frame(
     };
 
     // Write the frame to the real MOQ group
-    {
+    let result = {
         let mut handles = HANDLES.lock().unwrap();
         if let Some(group_data) = handles.group_producers.get_mut(&group.id) {
             if group_data.finished {
@@ -736,7 +780,9 @@ pub unsafe extern "C" fn moq_group_producer_write_frame(
         } else {
             MoqResult::InvalidArgument
         }
-    }
+    };
+    
+    result
 }
 
 /// Finish a group producer
@@ -979,6 +1025,24 @@ pub extern "C" fn moq_result_to_string(result: MoqResult) -> *const c_char {
     };
     
     message.as_ptr() as *const c_char
+}
+
+/// Spawn a long-running task that calls a C callback function
+/// This ensures the task runs within the Tokio runtime context
+#[no_mangle]
+pub unsafe extern "C" fn moq_spawn_task(
+    callback: extern "C" fn(*mut std::os::raw::c_void),
+    user_data: *mut std::os::raw::c_void,
+) -> MoqResult {
+    // Convert the raw pointer to usize to make it Send
+    let user_data_addr = user_data as usize;
+    RUNTIME.spawn(async move {
+        // Convert back to pointer inside the async block
+        let user_data_ptr = user_data_addr as *mut std::os::raw::c_void;
+        callback(user_data_ptr);
+    });
+    
+    MoqResult::Success
 }
 
 /// Function to ensure all FFI functions are kept in the binary

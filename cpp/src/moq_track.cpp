@@ -14,9 +14,8 @@ namespace moq {
 TrackProducer::TrackProducer(void* handle) : handle_(handle) {}
 
 TrackProducer::~TrackProducer() {
-    // Clean up handle if needed
     if (handle_) {
-        // moq_track_producer_free(static_cast<MoqTrackProducer*>(handle_));
+        moq_track_producer_free(static_cast<MoqTrackProducer*>(handle_));
     }
 }
 
@@ -25,9 +24,17 @@ std::unique_ptr<GroupProducer> TrackProducer::createGroup(uint64_t sequence_numb
         return nullptr;
     }
     
-    // For now, this is a placeholder implementation
-    // In a real implementation, this would create a group producer handle via FFI
-    void* group_handle = nullptr; // Would come from FFI
+    MoqGroupProducer* group_handle = nullptr;
+    MoqResult result = moq_track_producer_create_group(
+        static_cast<MoqTrackProducer*>(handle_),
+        sequence_number,
+        &group_handle
+    );
+    
+    if (result != MoqResult::Success || !group_handle) {
+        return nullptr;
+    }
+    
     return std::unique_ptr<GroupProducer>(new GroupProducer(group_handle));
 }
 
@@ -35,9 +42,8 @@ std::unique_ptr<GroupProducer> TrackProducer::createGroup(uint64_t sequence_numb
 TrackConsumer::TrackConsumer(void* handle) : handle_(handle) {}
 
 TrackConsumer::~TrackConsumer() {
-    // Clean up handle if needed
     if (handle_) {
-        // moq_track_consumer_free(static_cast<MoqTrackConsumer*>(handle_));
+        moq_track_consumer_free(static_cast<MoqTrackConsumer*>(handle_));
     }
 }
 
@@ -47,13 +53,16 @@ std::future<std::unique_ptr<GroupConsumer>> TrackConsumer::nextGroup() {
             return nullptr;
         }
         
-        // For now, this is a placeholder implementation
-        // In a real implementation, this would wait for the next group via FFI
+        MoqGroupConsumer* group_handle = nullptr;
+        MoqResult result = moq_track_consumer_next_group(
+            static_cast<MoqTrackConsumer*>(handle_),
+            &group_handle
+        );
         
-        // Simulate some delay for async operation
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (result != MoqResult::Success || !group_handle) {
+            return nullptr;
+        }
         
-        void* group_handle = nullptr; // Would come from FFI
         return std::unique_ptr<GroupConsumer>(new GroupConsumer(group_handle));
     });
 }

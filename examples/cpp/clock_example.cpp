@@ -39,17 +39,22 @@ public:
                 sendSegment(std::move(group), now);
             }).detach();
 
-            // Calculate next minute boundary
-            auto next = now + std::chrono::minutes(1);
-            auto next_time_t = std::chrono::system_clock::to_time_t(next);
+            // Wait until next minute
+            auto next_minute = now + std::chrono::minutes(1);
+            
+            // Round down to start of next minute
+            auto next_time_t = std::chrono::system_clock::to_time_t(next_minute);
             auto next_tm = *std::localtime(&next_time_t);
             next_tm.tm_sec = 0;
-            auto next_minute = std::chrono::system_clock::from_time_t(std::mktime(&next_tm));
+            next_tm.tm_min = (next_tm.tm_min / 1) * 1; // Ensure it's on minute boundary
+            auto aligned_next = std::chrono::system_clock::from_time_t(std::mktime(&next_tm));
 
-            auto delay = next_minute - now;
-            std::this_thread::sleep_for(delay);
+            auto delay = aligned_next - now;
+            if (delay.count() > 0) {
+                std::this_thread::sleep_for(delay);
+            }
 
-            now = next_minute;
+            now = aligned_next;
         }
     }
 
@@ -65,7 +70,11 @@ private:
         base_stream << std::put_time(&tm, "%Y-%m-%d %H:%M:");
         std::string base = base_stream.str();
         
-        group->writeFrame(base);
+        // Write the base time (minute portion)
+        if (!group->writeFrame(base)) {
+            std::cerr << "Failed to write base frame" << std::endl;
+            return;
+        }
 
         while (true) {
             time_t = std::chrono::system_clock::to_time_t(now);
@@ -75,27 +84,31 @@ private:
             delta_stream << std::setfill('0') << std::setw(2) << tm.tm_sec;
             std::string delta = delta_stream.str();
             
-            group->writeFrame(delta);
+            // Write the seconds frame
+            if (!group->writeFrame(delta)) {
+                std::cerr << "Failed to write frame" << std::endl;
+                break;
+            }
 
-            // Calculate next second boundary
-            auto next = now + std::chrono::seconds(1);
-            auto next_time_t = std::chrono::system_clock::to_time_t(next);
+            // Wait for next second
+            auto next_second = now + std::chrono::seconds(1);
+            auto next_time_t = std::chrono::system_clock::to_time_t(next_second);
             auto next_tm = *std::localtime(&next_time_t);
-            auto next_second = std::chrono::system_clock::from_time_t(std::mktime(&next_tm));
+            auto aligned_next = std::chrono::system_clock::from_time_t(std::mktime(&next_tm));
 
-            auto delay = next_second - now;
-            std::this_thread::sleep_for(delay);
+            auto delay = aligned_next - now;
+            if (delay.count() > 0) {
+                std::this_thread::sleep_for(delay);
+            }
 
-            // Check if we've moved to the next minute
+            // Update time and check if we've moved to the next minute
             now = std::chrono::system_clock::now();
-            time_t = std::chrono::system_clock::to_time_t(now);
-            tm = *std::localtime(&time_t);
-            auto new_tm = *std::localtime(&time_t);
-            
+            auto current_time_t = std::chrono::system_clock::to_time_t(now);
+            auto current_tm = *std::localtime(&current_time_t);
             auto start_time_t = std::chrono::system_clock::to_time_t(start_time);
             auto start_tm = *std::localtime(&start_time_t);
             
-            if (new_tm.tm_min != start_tm.tm_min) {
+            if (current_tm.tm_min != start_tm.tm_min) {
                 break;
             }
         }

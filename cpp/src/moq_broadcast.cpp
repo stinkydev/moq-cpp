@@ -47,9 +47,11 @@ std::unique_ptr<TrackProducer> BroadcastProducer::createTrack(const Track& track
 }
 
 std::shared_ptr<BroadcastProducer> BroadcastProducer::getConsumable() {
-    // This should return a copy or a weak reference, not this directly
-    // For now, we'll create a new shared_ptr that doesn't delete on destruction
-    return std::shared_ptr<BroadcastProducer>(this, [](BroadcastProducer*){});
+    // Return a shared_ptr to this instance
+    // Note: This assumes the BroadcastProducer is managed externally
+    return std::shared_ptr<BroadcastProducer>(this, [](BroadcastProducer*){
+        // No-op deleter since we don't own this
+    });
 }
 
 // BroadcastConsumer implementation

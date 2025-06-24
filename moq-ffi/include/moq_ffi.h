@@ -228,4 +228,9 @@ const char *moq_result_to_string(enum MoqResult result);
  */
 void _moq_ffi_keep_symbols(void);
 
+/**
+ * Spawn a long-running task in the Tokio runtime
+ */
+enum MoqResult moq_spawn_task(void (*callback)(void *), void *user_data);
+
 /* End of auto-generated header */
