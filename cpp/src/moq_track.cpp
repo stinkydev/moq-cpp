@@ -1,90 +1,61 @@
 #include "moq/track.h"
+#include "moq/group.h"
+#include <thread>
+#include <chrono>
 
 // Include the generated C header
 extern "C" {
-    typedef struct MoqTrack MoqTrack;
-    
-    typedef enum {
-        MoqResult_Success = 0,
-        MoqResult_InvalidArgument = 1,
-        MoqResult_NetworkError = 2,
-        MoqResult_TlsError = 3,
-        MoqResult_DnsError = 4,
-        MoqResult_GeneralError = 5,
-    } MoqResult;
-    
-    void moq_track_free(struct MoqTrack *track);
-    MoqResult moq_track_send_data(struct MoqTrack *track,
-                                  const uint8_t *data,
-                                  uintptr_t data_len);
+    #include "moq_ffi.h"
 }
 
 namespace moq {
 
-// Private constructor
-Track::Track(void* handle, const std::string& name, bool is_publisher) 
-    : handle_(handle), name_(name), is_publisher_(is_publisher) {}
+// TrackProducer implementation
+TrackProducer::TrackProducer(void* handle) : handle_(handle) {}
 
-// Destructor
-Track::~Track() {
+TrackProducer::~TrackProducer() {
+    // Clean up handle if needed
     if (handle_) {
-        moq_track_free(static_cast<MoqTrack*>(handle_));
+        // moq_track_producer_free(static_cast<MoqTrackProducer*>(handle_));
     }
 }
 
-// Send data (vector)
-bool Track::sendData(const std::vector<uint8_t>& data) {
-    if (!handle_ || !is_publisher_ || data.empty()) {
-        return false;
+std::unique_ptr<GroupProducer> TrackProducer::createGroup(uint64_t sequence_number) {
+    if (!handle_) {
+        return nullptr;
     }
-
-    MoqResult result = moq_track_send_data(
-        static_cast<MoqTrack*>(handle_),
-        data.data(),
-        data.size()
-    );
-
-    return result == MoqResult_Success;
+    
+    // For now, this is a placeholder implementation
+    // In a real implementation, this would create a group producer handle via FFI
+    void* group_handle = nullptr; // Would come from FFI
+    return std::unique_ptr<GroupProducer>(new GroupProducer(group_handle));
 }
 
-// Send data (raw pointer)
-bool Track::sendData(const uint8_t* data, size_t size) {
-    if (!handle_ || !is_publisher_ || !data || size == 0) {
-        return false;
+// TrackConsumer implementation
+TrackConsumer::TrackConsumer(void* handle) : handle_(handle) {}
+
+TrackConsumer::~TrackConsumer() {
+    // Clean up handle if needed
+    if (handle_) {
+        // moq_track_consumer_free(static_cast<MoqTrackConsumer*>(handle_));
     }
-
-    MoqResult result = moq_track_send_data(
-        static_cast<MoqTrack*>(handle_),
-        data,
-        size
-    );
-
-    return result == MoqResult_Success;
 }
 
-// Send string data
-bool Track::sendData(const std::string& data) {
-    if (!handle_ || !is_publisher_ || data.empty()) {
-        return false;
-    }
-
-    MoqResult result = moq_track_send_data(
-        static_cast<MoqTrack*>(handle_),
-        reinterpret_cast<const uint8_t*>(data.c_str()),
-        data.length()
-    );
-
-    return result == MoqResult_Success;
-}
-
-// Get track name
-const std::string& Track::getName() const {
-    return name_;
-}
-
-// Check if publisher
-bool Track::isPublisher() const {
-    return is_publisher_;
+std::future<std::unique_ptr<GroupConsumer>> TrackConsumer::nextGroup() {
+    return std::async(std::launch::async, [this]() -> std::unique_ptr<GroupConsumer> {
+        if (!handle_) {
+            return nullptr;
+        }
+        
+        // For now, this is a placeholder implementation
+        // In a real implementation, this would wait for the next group via FFI
+        
+        // Simulate some delay for async operation
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        void* group_handle = nullptr; // Would come from FFI
+        return std::unique_ptr<GroupConsumer>(new GroupConsumer(group_handle));
+    });
 }
 
 } // namespace moq

@@ -132,7 +132,7 @@ int main() {
     }
 
     // Connect to server
-    auto session = client->connect("https://relay.quic.video:443");
+    auto session = client->connect("https://moq.sesame-streams.com:4443");
     if (!session) {
         std::cerr << "Failed to connect" << std::endl;
         return 1;

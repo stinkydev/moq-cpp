@@ -53,18 +53,26 @@ endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/track.h")
     message(FATAL_ERROR "Required header cpp/include/moq/track.h not found")
 endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/broadcast.h")
+    message(FATAL_ERROR "Required header cpp/include/moq/broadcast.h not found")
+endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/group.h")
+    message(FATAL_ERROR "Required header cpp/include/moq/group.h not found")
+endif()
 
 # C++ wrapper library
 add_library(moq_cpp STATIC
     cpp/src/moq_client.cpp
     cpp/src/moq_session.cpp
     cpp/src/moq_track.cpp
+    cpp/src/moq_broadcast.cpp
+    cpp/src/moq_group.cpp
 )
 
 # Set include directories with absolute paths
 target_include_directories(moq_cpp PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>
-    $<BUILD_INTERFACE:${RUST_TARGET_DIR}/release/moq-ffi/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -78,11 +86,15 @@ add_dependencies(moq_cpp rust_lib)
 target_link_libraries(moq_cpp PUBLIC moq_ffi)
 
 # Example executables
-add_executable(moq_example examples/cpp/basic_example.cpp)
-target_link_libraries(moq_example moq_cpp)
+# Note: Old examples are temporarily disabled due to API changes
+# add_executable(moq_example examples/cpp/basic_example.cpp)
+# target_link_libraries(moq_example moq_cpp)
 
-add_executable(moq_pub_sub_example examples/cpp/publisher_subscriber_example.cpp)
-target_link_libraries(moq_pub_sub_example moq_cpp)
+# add_executable(moq_pub_sub_example examples/cpp/publisher_subscriber_example.cpp)
+# target_link_libraries(moq_pub_sub_example moq_cpp)
+
+add_executable(moq_clock_example examples/cpp/clock_example.cpp)
+target_link_libraries(moq_clock_example moq_cpp)
 
 # Find threading library
 find_package(Threads REQUIRED)
@@ -98,7 +110,7 @@ elseif(WIN32)
 endif()
 
 # Installation
-install(TARGETS moq_cpp moq_example moq_pub_sub_example
+install(TARGETS moq_cpp moq_clock_example
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin

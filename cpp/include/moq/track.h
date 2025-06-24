@@ -4,48 +4,46 @@
 #include <string>
 #include <functional>
 #include <vector>
+#include <optional>
+#include <future>
 
 namespace moq {
 
-/// Callback function type for receiving track data
-using DataCallback = std::function<void(const std::string& track_name, const std::vector<uint8_t>& data)>;
+/// Forward declarations
+class GroupProducer;
+class GroupConsumer;
 
-/// MOQ Track class - represents a published or subscribed track
-class Track {
+/// TrackProducer - publishes data to a track in groups
+class TrackProducer {
 public:
     /// Destructor
-    ~Track();
+    ~TrackProducer();
 
-    /// Send data on a published track
-    /// @param data The data to send
-    /// @return true on success, false on failure
-    bool sendData(const std::vector<uint8_t>& data);
-
-    /// Send data on a published track
-    /// @param data The data to send
-    /// @param size Size of the data
-    /// @return true on success, false on failure
-    bool sendData(const uint8_t* data, size_t size);
-
-    /// Send string data on a published track
-    /// @param data The string data to send
-    /// @return true on success, false on failure
-    bool sendData(const std::string& data);
-
-    /// Get the track name
-    /// @return The name of the track
-    const std::string& getName() const;
-
-    /// Check if this is a publisher track
-    /// @return true if this track can publish data
-    bool isPublisher() const;
+    /// Create a new group for publishing data
+    /// @param sequence_number Sequence number for the group
+    /// @return Unique pointer to GroupProducer on success, nullptr on failure
+    std::unique_ptr<GroupProducer> createGroup(uint64_t sequence_number);
 
 private:
-    friend class Session;
-    Track(void* handle, const std::string& name, bool is_publisher);
+    friend class BroadcastProducer;
+    TrackProducer(void* handle);
     void* handle_;
-    std::string name_;
-    bool is_publisher_;
+};
+
+/// TrackConsumer - consumes data from a track in groups
+class TrackConsumer {
+public:
+    /// Destructor
+    ~TrackConsumer();
+
+    /// Get the next group of data from the track
+    /// @return Future that resolves to GroupConsumer on success, nullptr when stream ends
+    std::future<std::unique_ptr<GroupConsumer>> nextGroup();
+
+private:
+    friend class BroadcastConsumer;
+    TrackConsumer(void* handle);
+    void* handle_;
 };
 
 } // namespace moq

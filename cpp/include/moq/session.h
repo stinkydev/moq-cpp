@@ -8,10 +8,8 @@
 namespace moq {
 
 /// Forward declarations
-class Track;
-
-/// Callback function type for receiving track data
-using DataCallback = std::function<void(const std::string& track_name, const std::vector<uint8_t>& data)>;
+class BroadcastProducer;
+class BroadcastConsumer;
 
 /// MOQ Session class - represents a connection to a MOQ server
 class Session {
@@ -26,16 +24,16 @@ public:
     /// Close the session
     void close();
 
-    /// Publish a track
-    /// @param track_name Name of the track to publish
-    /// @return Unique pointer to a Track on success, nullptr on failure
-    std::unique_ptr<Track> publishTrack(const std::string& track_name);
+    /// Publish a broadcast (equivalent to session.publish in Rust)
+    /// @param broadcast_name Name of the broadcast to publish
+    /// @param producer The broadcast producer to use for publishing
+    /// @return true on success, false on failure
+    bool publish(const std::string& broadcast_name, std::shared_ptr<BroadcastProducer> producer);
 
-    /// Subscribe to a track
-    /// @param track_name Name of the track to subscribe to
-    /// @param callback Callback function for received data
-    /// @return Unique pointer to a Track on success, nullptr on failure
-    std::unique_ptr<Track> subscribeTrack(const std::string& track_name, DataCallback callback);
+    /// Consume a broadcast (equivalent to session.consume in Rust)
+    /// @param broadcast_name Name of the broadcast to consume
+    /// @return Unique pointer to a BroadcastConsumer on success, nullptr on failure
+    std::unique_ptr<BroadcastConsumer> consume(const std::string& broadcast_name);
 
 private:
     friend class Client;

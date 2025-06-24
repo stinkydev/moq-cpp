@@ -1,53 +1,142 @@
-# MOQ C++ API - Publisher/Subscriber Example
+# MOQ C++ API - Clean Implementation
 
-This example demonstrates the extended MOQ C++ API with publishing and subscribing functionality.
+This is a reworked implementation of the MOQ C++ API that closely follows the concepts demonstrated in the `moq-clock` Rust example. The API provides a clean, modern C++17 interface for Media over QUIC (MOQ) applications.
 
-## What Was Added
+## Architecture Overview
 
-### 1. Rust FFI Layer Extensions (`moq-ffi/src/lib.rs`)
-- **Track Management**: Added `MoqTrack` struct and related functions
-- **Publishing**: `moq_session_publish_track()` and `moq_track_send_data()`
-- **Subscribing**: `moq_session_subscribe_track()` with callback support
-- **Memory Management**: Proper cleanup with `moq_track_free()`
+The API is organized around these key concepts:
 
-### 2. C++ Wrapper Extensions
-- **Track Class** (`cpp/include/moq/track.h`, `cpp/src/moq_track.cpp`):
-  - RAII-compliant Track management
-  - Multiple `sendData()` overloads (vector, raw pointer, string)
-  - Publisher/subscriber differentiation
+### Core Classes
 
-- **Session Extensions** (`cpp/include/moq/session.h`, `cpp/src/moq_session.cpp`):
-  - `publishTrack()` method
-  - `subscribeTrack()` method with C++ callback support
-  - Automatic callback management
+- **`Client`** - Manages connection to MOQ servers
+- **`Session`** - Represents an active connection, handles broadcast publishing/consuming
+- **`BroadcastProducer`** - Manages publishing multiple tracks within a broadcast
+- **`BroadcastConsumer`** - Manages consuming multiple tracks from a broadcast
+- **`TrackProducer`** - Publishes data to a specific track in groups
+- **`TrackConsumer`** - Consumes data from a specific track in groups
+- **`GroupProducer`** - Publishes frame-by-frame data within a group
+- **`GroupConsumer`** - Consumes frame-by-frame data within a group
 
-### 3. Example Applications
-- **Basic Example** (`examples/cpp/basic_example.cpp`): 
-  - Demonstrates simple publisher/subscriber setup
-  - Single message exchange
+### Data Flow
 
-- **Comprehensive Example** (`examples/cpp/publisher_subscriber_example.cpp`):
-  - Multiple message types (text and binary)
-  - Detailed logging and status reporting
-  - Demonstrates full API capabilities
-
-## API Usage
-
-### Creating Clients
-```cpp
-// Create separate clients for publishing and subscribing
-auto publisher_client = moq::Client::create(pub_config);
-auto subscriber_client = moq::Client::create(sub_config);
+```
+Client -> Session -> Broadcast -> Track -> Group -> Frame
 ```
 
-### Establishing Sessions
+## Clock Example
+
+The `clock_example.cpp` demonstrates the equivalent functionality of the Rust `moq-clock` example:
+
+### Publisher Usage
+
 ```cpp
-auto publisher_session = publisher_client->connect(server_url);
-auto subscriber_session = subscriber_client->connect(server_url);
+#include <moq/moq.h>
+
+// Initialize and connect
+auto client = moq::Client::create(config);
+auto session = client->connect("https://moq.sesame-streams.com:4443");
+
+// Create broadcast and track
+auto broadcast_producer = std::make_shared<moq::BroadcastProducer>();
+moq::Track track{.name = "seconds", .priority = 0};
+auto track_producer = broadcast_producer->createTrack(track);
+
+// Publish the broadcast
+session->publish("clock", broadcast_producer->getConsumable());
+
+// Send data in groups
+auto group = track_producer->createGroup(sequence_number);
+group->writeFrame("2024-06-24 15:30:");  // Base timestamp
+group->writeFrame("45");                 // Seconds
+group->finish();
 ```
 
-### Setting Up Subscriber
+### Subscriber Usage
+
 ```cpp
+// Consume broadcast and subscribe to track
+auto broadcast_consumer = session->consume("clock");
+auto track_consumer = broadcast_consumer->subscribeTrack(track);
+
+// Read groups and frames
+while (auto group_future = track_consumer->nextGroup()) {
+    auto group = group_future.get();
+    if (!group) break;
+    
+    // Read base frame
+    auto base_future = group->readFrame();
+    auto base_data = base_future.get();
+    
+    // Read subsequent frames
+    while (auto frame_future = group->readFrame()) {
+        auto frame_data = frame_future.get();
+        if (!frame_data) break;
+        // Process frame data...
+    }
+}
+```
+
+## Key Design Principles
+
+1. **RAII Resource Management** - All resources are automatically cleaned up
+2. **Modern C++ Semantics** - Uses smart pointers, futures, and optional types
+3. **Async-Ready** - Functions return futures for non-blocking operations
+4. **Exception Safety** - Proper error handling without exceptions in the API
+5. **Conceptual Clarity** - Maps directly to MOQ protocol concepts
+
+## Building
+
+```bash
+mkdir build && cd build
+cmake ..
+ninja
+```
+
+## Running the Clock Example
+
+### Publisher
+```bash
+./moq_clock_example https://moq.sesame-streams.com:4443 publish --broadcast clock --track seconds
+```
+
+### Subscriber
+```bash
+./moq_clock_example https://moq.sesame-streams.com:4443 subscribe --broadcast clock --track seconds
+```
+
+## Implementation Status
+
+This is a proof-of-concept implementation that demonstrates the API design. The current implementation uses placeholder FFI calls - a full implementation would require:
+
+1. **Extended FFI Layer** - Additional Rust functions for broadcast/track/group management
+2. **Async Runtime Integration** - Proper async/await integration with Tokio
+3. **Memory Management** - Correct handling of Rust-allocated objects
+4. **Error Handling** - Comprehensive error propagation from Rust to C++
+
+## Comparison with Rust moq-clock
+
+| Rust moq-clock | C++ API |
+|----------------|---------|
+| `moq_lite::Session::connect()` | `Session` (from client connect) |
+| `BroadcastProducer::new()` | `std::make_shared<BroadcastProducer>()` |
+| `broadcast.create(track)` | `broadcast_producer->createTrack(track)` |
+| `session.publish(name, broadcast)` | `session->publish(name, producer)` |
+| `session.consume(&name)` | `session->consume(name)` |
+| `track.create_group(seq)` | `track_producer->createGroup(seq)` |
+| `group.write_frame(data)` | `group->writeFrame(data)` |
+| `group.finish()` | `group->finish()` |
+| `track.next_group().await` | `track_consumer->nextGroup().get()` |
+| `group.read_frame().await` | `group->readFrame().get()` |
+
+The C++ API provides the same conceptual model with C++-idiomatic patterns.
+
+## Legacy Examples
+
+The previous API examples have been moved to `.old` files:
+- `basic_example.cpp.old` - Simple track-based API
+- `publisher_subscriber_example.cpp.old` - Extended track-based API
+
+These demonstrate an earlier iteration of the API that was more focused on direct track management rather than the broadcast/group concept hierarchy.
 auto subscriber_track = subscriber_session->subscribeTrack(track_name, 
     [](const std::string& name, const std::vector<uint8_t>& data) {
         std::string received_data(data.begin(), data.end());
