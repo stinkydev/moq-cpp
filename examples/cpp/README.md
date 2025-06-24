@@ -132,11 +132,7 @@ The C++ API provides the same conceptual model with C++-idiomatic patterns.
 
 ## Legacy Examples
 
-The previous API examples have been moved to `.old` files:
-- `basic_example.cpp.old` - Simple track-based API
-- `publisher_subscriber_example.cpp.old` - Extended track-based API
-
-These demonstrate an earlier iteration of the API that was more focused on direct track management rather than the broadcast/group concept hierarchy.
+Previous API examples that demonstrated an earlier iteration focused on direct track management rather than the broadcast/group concept hierarchy have been removed in favor of the current clock example implementation.
 auto subscriber_track = subscriber_session->subscribeTrack(track_name, 
     [](const std::string& name, const std::vector<uint8_t>& data) {
         std::string received_data(data.begin(), data.end());
@@ -170,11 +166,9 @@ publisher_track->sendData(raw_data, data_size);
 # Build the project
 cd build && ninja
 
-# Run the basic example
-./moq_example
-
-# Run the comprehensive example  
-./moq_pub_sub_example
+# Run the clock example
+./moq_clock_example https://moq.sesame-streams.com:4443 publish --broadcast clock
+./moq_clock_example https://moq.sesame-streams.com:4443 subscribe --broadcast clock
 ```
 
 ## Architecture Notes
