@@ -214,7 +214,7 @@ int main(int argc, char* argv[]) {
 
     // Create client configuration
     moq::ClientConfig config;
-    config.bind_addr = "[::]:0";
+    config.bind_addr = "0.0.0.0:0";
     config.tls_disable_verify = false;
 
     // Create the client
