@@ -17,7 +17,7 @@ fn main() {
 
     // Always try to generate header with cbindgen
     if let Err(e) = generate_cbindgen_header() {
-        eprintln!("cbindgen failed: {}", e);
+        eprintln!("cbindgen failed: {e}");
         eprintln!("This indicates a problem with the FFI definitions or cbindgen configuration.");
         eprintln!("Please check that all exported functions have proper #[no_mangle] and 'extern \"C\"' declarations.");
         panic!("cbindgen header generation failed");
