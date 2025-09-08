@@ -11,6 +11,7 @@ use url::Url;
 
 // Import MOQ libraries
 use moq_lite::*;
+use moq_native::web_transport_quinn;
 
 /// Global async runtime for handling MOQ operations
 static RUNTIME: LazyLock<Runtime> =
@@ -63,13 +64,16 @@ struct ClientData {
 struct SessionData {
     client_id: u64,
     url: String,
-    session: moq_lite::Session,
+    session: moq_lite::Session<web_transport_quinn::Session>,
+    publish_origin: Option<moq_lite::OriginProducer>,
+    subscribe_origin: Option<moq_lite::OriginConsumer>,
 }
 
 /// Broadcast producer data
 struct BroadcastProducerData {
     name: String,
-    producer: BroadcastProducer,
+    broadcast: moq_lite::Produce<moq_lite::BroadcastProducer, moq_lite::BroadcastConsumer>,
+    origin_consumer: Option<moq_lite::OriginConsumer>,
     tracks: Vec<u64>, // Track producer IDs
 }
 
@@ -308,15 +312,32 @@ pub unsafe extern "C" fn moq_client_connect(
     };
 
     // Get the client and establish connection
-    let session = {
+    let (session_data, session_created) = {
         let mut handles = HANDLES.lock().unwrap();
         if let Some(client_data) = handles.clients.get_mut(&client.id) {
             match RUNTIME.block_on(async {
                 let connection = client_data.client.connect(url.clone()).await?;
-                let session = moq_lite::Session::connect(connection).await?;
-                Ok::<_, anyhow::Error>(session)
+                
+                // Create origins for publish/subscribe
+                let publish_origin = moq_lite::Origin::produce();
+                let session = moq_lite::Session::connect(
+                    connection, 
+                    Some(publish_origin.consumer), 
+                    None
+                ).await?;
+                
+                Ok::<_, anyhow::Error>((session, publish_origin.producer))
             }) {
-                Ok(session) => session,
+                Ok((session, publish_origin)) => {
+                    let session_data = SessionData {
+                        client_id: client.id,
+                        url: url_str.to_string(),
+                        session,
+                        publish_origin: Some(publish_origin),
+                        subscribe_origin: None,
+                    };
+                    (session_data, true)
+                },
                 Err(_) => return MoqResult::NetworkError,
             }
         } else {
@@ -325,16 +346,13 @@ pub unsafe extern "C" fn moq_client_connect(
     };
 
     let session_id = next_id();
-    let session_data = SessionData {
-        client_id: client.id,
-        url: url_str.to_string(),
-        session,
-    };
-
+    
     // Store the session data
     {
         let mut handles = HANDLES.lock().unwrap();
-        handles.sessions.insert(session_id, session_data);
+        if session_created {
+            handles.sessions.insert(session_id, session_data);
+        }
     }
 
     // Create and return the session handle
@@ -409,9 +427,11 @@ pub extern "C" fn moq_broadcast_producer_new(
     }
 
     let producer_id = next_id();
+    let broadcast_produce = moq_lite::Broadcast::produce();
     let producer_data = BroadcastProducerData {
         name: String::new(),
-        producer: BroadcastProducer::new(),
+        broadcast: broadcast_produce,
+        origin_consumer: None,
         tracks: Vec::new(),
     };
 
@@ -481,7 +501,7 @@ pub unsafe extern "C" fn moq_broadcast_producer_create_track(
                 // Re-acquire the lock inside the async block
                 let mut handles = HANDLES.lock().unwrap();
                 if let Some(broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
-                    Ok(broadcast.producer.create(track_clone))
+                    Ok(broadcast.broadcast.producer.create_track(track_clone))
                 } else {
                     Err(())
                 }
@@ -554,7 +574,7 @@ pub unsafe extern "C" fn moq_session_publish(
         // Get the broadcast consumer
         let consumer = if let Some(broadcast) = handles.broadcast_producers.get_mut(&producer.id) {
             broadcast.name = name.clone();
-            broadcast.producer.consume()
+            broadcast.broadcast.consumer.clone()
         } else {
             return MoqResult::InvalidArgument;
         };
@@ -567,8 +587,10 @@ pub unsafe extern "C" fn moq_session_publish(
         RUNTIME.block_on(async {
             let mut handles = HANDLES.lock().unwrap();
             if let Some(session_data) = handles.sessions.get_mut(&session_id) {
-                // session.publish() may spawn async tasks internally
-                session_data.session.publish(name, consumer);
+                // Use the origin producer to publish the broadcast
+                if let Some(ref mut origin_producer) = session_data.publish_origin {
+                    origin_producer.publish_broadcast(&name, consumer);
+                }
             }
         });
     }
@@ -604,7 +626,12 @@ pub unsafe extern "C" fn moq_session_consume(
         RUNTIME.block_on(async {
             let mut handles = HANDLES.lock().unwrap();
             if let Some(session_data) = handles.sessions.get_mut(&session_id) {
-                Some(session_data.session.consume(&name))
+                // Use the origin consumer to consume broadcasts
+                if let Some(ref origin_consumer) = session_data.subscribe_origin {
+                    origin_consumer.consume_broadcast(&name)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -673,7 +700,7 @@ pub unsafe extern "C" fn moq_broadcast_consumer_subscribe_track(
     let track_consumer = {
         let mut handles = HANDLES.lock().unwrap();
         if let Some(broadcast) = handles.broadcast_consumers.get_mut(&consumer.id) {
-            broadcast.consumer.subscribe(&moq_track)
+            broadcast.consumer.subscribe_track(&moq_track)
         } else {
             return MoqResult::InvalidArgument;
         }
@@ -813,7 +840,7 @@ pub unsafe extern "C" fn moq_group_producer_finish(group: *mut MoqGroupProducer)
         let mut handles = HANDLES.lock().unwrap();
         if let Some(group_data) = handles.group_producers.remove(&group.id) {
             // finish takes ownership, so we need to remove the producer from the map
-            group_data.producer.finish();
+            group_data.producer.close();
             MoqResult::Success
         } else {
             MoqResult::InvalidArgument

@@ -24,6 +24,8 @@ public:
         auto tm = *std::localtime(&start_time);
         uint64_t sequence = tm.tm_min;
 
+        std::cout << "Starting clock publisher..." << std::endl;
+
         while (true) {
             // Create a new group for this minute
             auto group = track_->createGroup(sequence);
@@ -32,6 +34,7 @@ public:
                 break;
             }
 
+            std::cout << "Publishing minute: " << sequence << std::endl;
             sequence++;
 
             // Send this group in a separate thread
@@ -163,37 +166,64 @@ public:
 };
 
 void printUsage(const char* program_name) {
-    std::cout << "Usage: " << program_name << " <URL> [publish|subscribe] [options]\n"
-              << "  URL: Server URL (e.g., https://moq.sesame-streams.com:4443)\n"
+    std::cout << "Usage: " << program_name << " --url <URL> --broadcast <name> [publish|subscribe] [options]\n"
+              << "  --url <URL>          Server URL (e.g., https://moq.sesame-streams.com:4443)\n"
+              << "  --broadcast <name>   Broadcast name (required)\n"
               << "  Mode: publish or subscribe\n"
               << "  Options:\n"
-              << "    --broadcast <name>   Broadcast name (default: clock)\n"
               << "    --track <name>       Track name (default: seconds)\n"
               << "    --help               Show this help\n";
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
+    if (argc < 2) {
         printUsage(argv[0]);
         return 1;
     }
 
-    std::string url = argv[1];
-    std::string mode = argv[2];
-    std::string broadcast_name = "clock";
+    std::string url;
+    std::string mode;
+    std::string broadcast_name;
     std::string track_name = "seconds";
 
-    // Parse additional arguments
-    for (int i = 3; i < argc; i++) {
+    // Parse arguments
+    for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--broadcast" && i + 1 < argc) {
+        if (arg == "--url" && i + 1 < argc) {
+            url = argv[++i];
+        } else if (arg == "--broadcast" && i + 1 < argc) {
             broadcast_name = argv[++i];
         } else if (arg == "--track" && i + 1 < argc) {
             track_name = argv[++i];
         } else if (arg == "--help") {
             printUsage(argv[0]);
             return 0;
+        } else if (arg == "publish" || arg == "subscribe") {
+            mode = arg;
+        } else {
+            std::cerr << "Unknown argument: " << arg << std::endl;
+            printUsage(argv[0]);
+            return 1;
         }
+    }
+
+    // Validate required arguments
+    if (url.empty()) {
+        std::cerr << "Error: --url is required" << std::endl;
+        printUsage(argv[0]);
+        return 1;
+    }
+
+    if (broadcast_name.empty()) {
+        std::cerr << "Error: --broadcast is required" << std::endl;
+        printUsage(argv[0]);
+        return 1;
+    }
+
+    if (mode.empty()) {
+        std::cerr << "Error: Mode must be specified (publish or subscribe)" << std::endl;
+        printUsage(argv[0]);
+        return 1;
     }
 
     if (mode != "publish" && mode != "subscribe") {
@@ -214,8 +244,8 @@ int main(int argc, char* argv[]) {
 
     // Create client configuration
     moq::ClientConfig config;
-    config.bind_addr = "0.0.0.0:0";
-    config.tls_disable_verify = false;
+    config.bind_addr = "0.0.0.0:0";  // Use IPv4 for better compatibility
+    config.tls_disable_verify = true;  // Disable TLS verification for testing
 
     // Create the client
     auto client = moq::Client::create(config);
@@ -264,6 +294,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        std::cout << "Broadcast published successfully, starting clock..." << std::endl;
+
         // Start the clock publisher
         ClockPublisher publisher(std::move(track_producer));
         publisher.run();
@@ -272,10 +304,13 @@ int main(int argc, char* argv[]) {
         std::cout << "Subscribing to clock from broadcast: " << broadcast_name 
                   << ", track: " << track_name << std::endl;
 
+        // Give some time for publisher to be available
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+
         // Consume the broadcast
         auto broadcast_consumer = session->consume(broadcast_name);
         if (!broadcast_consumer) {
-            std::cerr << "Failed to consume broadcast" << std::endl;
+            std::cerr << "Failed to consume broadcast (maybe no publisher available?)" << std::endl;
             return 1;
         }
 
@@ -285,6 +320,8 @@ int main(int argc, char* argv[]) {
             std::cerr << "Failed to subscribe to track" << std::endl;
             return 1;
         }
+
+        std::cout << "Successfully subscribed to track, waiting for data..." << std::endl;
 
         // Start the clock subscriber
         ClockSubscriber subscriber(std::move(track_consumer));
