@@ -256,8 +256,16 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Connecting to: " << url << std::endl;
 
-    // Connect to the server
-    auto session = client->connect(url);
+    // Determine session mode based on operation
+    moq::SessionMode session_mode;
+    if (mode == "publish") {
+        session_mode = moq::SessionMode::PublishOnly;
+    } else {
+        session_mode = moq::SessionMode::SubscribeOnly;
+    }
+
+    // Connect to the server with appropriate mode
+    auto session = client->connect(url, session_mode);
     if (!session) {
         std::cerr << "Failed to connect to MOQ server" << std::endl;
         std::string error = client->getLastError();

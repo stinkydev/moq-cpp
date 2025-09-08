@@ -19,6 +19,13 @@ enum class Result {
     GeneralError = 5
 };
 
+/// Session mode enumeration matching the C FFI
+enum class SessionMode {
+    PublishOnly = 0,
+    SubscribeOnly = 1,
+    Both = 2
+};
+
 /// Configuration for MOQ client
 struct ClientConfig {
     std::string bind_addr = "[::]:0";
@@ -39,10 +46,11 @@ public:
     /// Destructor
     ~Client();
 
-    /// Connect to a MOQ server
+    /// Connect to a MOQ server with specified session mode
     /// @param url URL to connect to
+    /// @param mode Session mode (PublishOnly, SubscribeOnly, or Both)
     /// @return Unique pointer to a Session on success, nullptr on failure
-    std::unique_ptr<Session> connect(const std::string& url);
+    std::unique_ptr<Session> connect(const std::string& url, SessionMode mode);
 
     /// Get the last error that occurred
     /// @return Error message string, empty if no error

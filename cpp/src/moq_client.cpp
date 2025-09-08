@@ -43,16 +43,17 @@ Client::~Client() {
     }
 }
 
-// Connect method
-std::unique_ptr<Session> Client::connect(const std::string& url) {
+// Connect method with session mode
+std::unique_ptr<Session> Client::connect(const std::string& url, SessionMode mode) {
     if (!handle_) {
         return nullptr;
     }
 
     MoqSession* session_handle = nullptr;
-    auto result = moq_client_connect(
+    auto result = moq_client_connect_with_mode(
         static_cast<MoqClient*>(handle_),
         url.c_str(),
+        static_cast<MoqSessionMode>(mode),
         &session_handle
     );
 
