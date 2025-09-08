@@ -9,7 +9,23 @@ find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
 # Build the Rust FFI library
 set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
-set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
+
+# Choose debug or release based on CMAKE_CONFIGURATION_TYPES
+# For multi-config generators like Visual Studio, we'll default to release for better performance
+if(CMAKE_CONFIGURATION_TYPES)
+    # Multi-config generator (like Visual Studio)
+    set(RUST_BUILD_TYPE "--release")
+    set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
+else()
+    # Single-config generator (like Unix Makefiles or Ninja)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(RUST_BUILD_TYPE "")
+        set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
+    else()
+        set(RUST_BUILD_TYPE "--release")
+        set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
+    endif()
+endif()
 
 if(WIN32)
     set(RUST_LIB_NAME moq_ffi.lib)
@@ -21,11 +37,11 @@ endif()
 
 # Custom command to build the Rust library
 add_custom_command(
-    OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME} ${RUST_TARGET_DIR}/release/moq-ffi/include/moq_ffi.h
-    COMMAND ${CARGO_EXECUTABLE} build --release --target-dir ${RUST_TARGET_DIR}
+    OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME}
+    COMMAND ${CARGO_EXECUTABLE} build ${RUST_BUILD_TYPE} --target-dir ${RUST_TARGET_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Rust FFI build completed successfully"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi
-    COMMENT "Building Rust FFI library and generating headers"
+    COMMENT "Building Rust FFI library (Debug=${RUST_BUILD_TYPE})"
     VERBATIM
 )
 

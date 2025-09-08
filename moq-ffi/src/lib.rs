@@ -73,7 +73,6 @@ struct SessionData {
 struct BroadcastProducerData {
     name: String,
     broadcast: moq_lite::Produce<moq_lite::BroadcastProducer, moq_lite::BroadcastConsumer>,
-    origin_consumer: Option<moq_lite::OriginConsumer>,
     tracks: Vec<u64>, // Track producer IDs
 }
 
@@ -253,7 +252,9 @@ pub unsafe extern "C" fn moq_client_new(
             Ok(path) => Some(path.to_string()),
             Err(_) => return MoqResult::InvalidArgument,
         }
-    }; // Create MOQ native client config
+    };
+
+    // Create MOQ native client config
     #[allow(clippy::field_reassign_with_default)]
     let client_config = {
         let mut moq_config = moq_native::ClientConfig::default();
@@ -317,15 +318,13 @@ pub unsafe extern "C" fn moq_client_connect(
         if let Some(client_data) = handles.clients.get_mut(&client.id) {
             match RUNTIME.block_on(async {
                 let connection = client_data.client.connect(url.clone()).await?;
-                
+
                 // Create origins for publish/subscribe
                 let publish_origin = moq_lite::Origin::produce();
-                let session = moq_lite::Session::connect(
-                    connection, 
-                    Some(publish_origin.consumer), 
-                    None
-                ).await?;
-                
+                let session =
+                    moq_lite::Session::connect(connection, Some(publish_origin.consumer), None)
+                        .await?;
+
                 Ok::<_, anyhow::Error>((session, publish_origin.producer))
             }) {
                 Ok((session, publish_origin)) => {
@@ -337,7 +336,7 @@ pub unsafe extern "C" fn moq_client_connect(
                         subscribe_origin: None,
                     };
                     (session_data, true)
-                },
+                }
                 Err(_) => return MoqResult::NetworkError,
             }
         } else {
@@ -346,7 +345,7 @@ pub unsafe extern "C" fn moq_client_connect(
     };
 
     let session_id = next_id();
-    
+
     // Store the session data
     {
         let mut handles = HANDLES.lock().unwrap();
@@ -431,7 +430,6 @@ pub extern "C" fn moq_broadcast_producer_new(
     let producer_data = BroadcastProducerData {
         name: String::new(),
         broadcast: broadcast_produce,
-        origin_consumer: None,
         tracks: Vec::new(),
     };
 
