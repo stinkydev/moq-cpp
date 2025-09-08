@@ -14,8 +14,12 @@ use moq_lite::*;
 use moq_native::web_transport_quinn;
 
 /// Global async runtime for handling MOQ operations
-static RUNTIME: LazyLock<Runtime> =
-    LazyLock::new(|| Runtime::new().expect("Failed to create Tokio runtime"));
+static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime")
+});
 
 /// Global storage for all MOQ handles
 static HANDLES: LazyLock<Mutex<HandleStorage>> = LazyLock::new(|| Mutex::new(HandleStorage::new()));
@@ -133,6 +137,15 @@ pub enum MoqResult {
     TlsError = 3,
     DnsError = 4,
     GeneralError = 5,
+}
+
+/// Session modes for MOQ connections
+#[repr(C)]
+#[derive(Debug, PartialEq)]
+pub enum MoqSessionMode {
+    PublishOnly = 0,
+    SubscribeOnly = 1,
+    Both = 2,
 }
 
 /// Configuration for MOQ client
@@ -334,6 +347,111 @@ pub unsafe extern "C" fn moq_client_connect(
                         session,
                         publish_origin: Some(publish_origin),
                         subscribe_origin: None,
+                    };
+                    (session_data, true)
+                }
+                Err(_) => return MoqResult::NetworkError,
+            }
+        } else {
+            return MoqResult::InvalidArgument;
+        }
+    };
+
+    let session_id = next_id();
+
+    // Store the session data
+    {
+        let mut handles = HANDLES.lock().unwrap();
+        if session_created {
+            handles.sessions.insert(session_id, session_data);
+        }
+    }
+
+    // Create and return the session handle
+    let boxed_session = Box::new(MoqSession { id: session_id });
+    *session_out = Box::into_raw(boxed_session);
+
+    MoqResult::Success
+}
+
+/// Connect to a MOQ server with specified session mode
+#[no_mangle]
+pub unsafe extern "C" fn moq_client_connect_with_mode(
+    client: *mut MoqClient,
+    url: *const c_char,
+    mode: MoqSessionMode,
+    session_out: *mut *mut MoqSession,
+) -> MoqResult {
+    if client.is_null() || url.is_null() || session_out.is_null() {
+        return MoqResult::InvalidArgument;
+    }
+
+    let client = &*client;
+    let url_str = match CStr::from_ptr(url).to_str() {
+        Ok(url) => url,
+        Err(_) => return MoqResult::InvalidArgument,
+    };
+
+    let url = match Url::parse(url_str) {
+        Ok(url) => url,
+        Err(_) => return MoqResult::InvalidArgument,
+    };
+
+    // Get the client and establish connection
+    let (session_data, session_created) = {
+        let mut handles = HANDLES.lock().unwrap();
+        if let Some(client_data) = handles.clients.get_mut(&client.id) {
+            match RUNTIME.block_on(async {
+                let connection = client_data.client.connect(url.clone()).await?;
+
+                // Create origins based on session mode
+                let (session, publish_origin_producer, subscribe_origin_consumer) = match mode {
+                    MoqSessionMode::PublishOnly => {
+                        let publish_origin = moq_lite::Origin::produce();
+                        let producer = publish_origin.producer;
+                        let consumer = publish_origin.consumer;
+                        let session =
+                            moq_lite::Session::connect(connection, Some(consumer), None).await?;
+                        (session, Some(producer), None)
+                    }
+                    MoqSessionMode::SubscribeOnly => {
+                        let subscribe_origin = moq_lite::Origin::produce();
+                        let producer = subscribe_origin.producer;
+                        let consumer = subscribe_origin.consumer;
+                        let session =
+                            moq_lite::Session::connect(connection, None, Some(producer)).await?;
+                        (session, None, Some(consumer))
+                    }
+                    MoqSessionMode::Both => {
+                        let publish_origin = moq_lite::Origin::produce();
+                        let subscribe_origin = moq_lite::Origin::produce();
+                        let pub_producer = publish_origin.producer;
+                        let pub_consumer = publish_origin.consumer;
+                        let sub_producer = subscribe_origin.producer;
+                        let sub_consumer = subscribe_origin.consumer;
+                        let session = moq_lite::Session::connect(
+                            connection,
+                            Some(pub_consumer),
+                            Some(sub_producer),
+                        )
+                        .await?;
+                        (session, Some(pub_producer), Some(sub_consumer))
+                    }
+                };
+
+                Ok::<_, anyhow::Error>((
+                    session,
+                    publish_origin_producer,
+                    subscribe_origin_consumer,
+                ))
+            }) {
+                Ok((session, publish_origin, subscribe_origin)) => {
+                    let session_data = SessionData {
+                        client_id: client.id,
+                        url: url_str.to_string(),
+                        session,
+                        publish_origin,
+                        subscribe_origin,
                     };
                     (session_data, true)
                 }
@@ -614,26 +732,20 @@ pub unsafe extern "C" fn moq_session_consume(
         Err(_) => return MoqResult::InvalidArgument,
     };
 
-    // Get the broadcast consumer from the session
+    // Block on the async operation directly
     let consumer = {
-        let handles = HANDLES.lock().unwrap();
-        let session_id = session.id;
-        drop(handles); // Release lock before async operation
-
-        // Use the runtime to ensure we're in the right context for any async operations
-        RUNTIME.block_on(async {
-            let mut handles = HANDLES.lock().unwrap();
-            if let Some(session_data) = handles.sessions.get_mut(&session_id) {
-                // Use the origin consumer to consume broadcasts
-                if let Some(ref origin_consumer) = session_data.subscribe_origin {
-                    origin_consumer.consume_broadcast(&name)
-                } else {
-                    None
-                }
+        let mut handles = HANDLES.lock().unwrap();
+        if let Some(session_data) = handles.sessions.get_mut(&session.id) {
+            // Use the origin consumer to consume broadcasts
+            if let Some(ref origin_consumer) = session_data.subscribe_origin {
+                // Wrap in block_on in case consume_broadcast internally uses async operations
+                RUNTIME.block_on(async { origin_consumer.consume_broadcast(&name) })
             } else {
                 None
             }
-        })
+        } else {
+            None
+        }
     };
 
     let consumer = match consumer {
@@ -698,7 +810,8 @@ pub unsafe extern "C" fn moq_broadcast_consumer_subscribe_track(
     let track_consumer = {
         let mut handles = HANDLES.lock().unwrap();
         if let Some(broadcast) = handles.broadcast_consumers.get_mut(&consumer.id) {
-            broadcast.consumer.subscribe_track(&moq_track)
+            // Wrap in block_on in case subscribe_track internally uses async operations
+            RUNTIME.block_on(async { broadcast.consumer.subscribe_track(&moq_track) })
         } else {
             return MoqResult::InvalidArgument;
         }
@@ -858,18 +971,25 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
 
     let track = &*track;
 
-    // Get the next group from the channel
+    // Get the next group using proper async handling
     let group_consumer_opt = {
-        let mut handles = HANDLES.lock().unwrap();
-        if let Some(track_data) = handles.track_consumers.get_mut(&track.id) {
-            // Use block_on to handle the async operation
-            match RUNTIME.block_on(async { track_data.consumer.next_group().await }) {
-                Ok(Some(group)) => Some(group),
-                Ok(None) => None,
-                Err(_) => None,
+        let track_id = track.id;
+
+        // Get a reference to the consumer
+        let mut consumer = {
+            let handles = HANDLES.lock().unwrap();
+            if let Some(track_data) = handles.track_consumers.get(&track_id) {
+                // Clone what we need before dropping the lock
+                track_data.consumer.clone()
+            } else {
+                return MoqResult::InvalidArgument;
             }
-        } else {
-            return MoqResult::InvalidArgument;
+        }; // MutexGuard is dropped here
+
+        // Now call the async operation
+        match RUNTIME.block_on(async move { consumer.next_group().await }) {
+            Ok(Some(group)) => Some(group),
+            _ => None,
         }
     };
 
@@ -922,21 +1042,30 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
 
     let group = &*group;
 
-    // Get the next frame using blocking async
+    // Get the next frame using proper async handling
     let frame_data_opt = {
+        let group_id = group.id;
+
+        // Get a mutable reference to the consumer and call read_frame directly
         let mut handles = HANDLES.lock().unwrap();
-        if let Some(group_data) = handles.group_consumers.get_mut(&group.id) {
-            // Use block_on to handle the async operation
-            match RUNTIME.block_on(async { group_data.consumer.read_frame().await }) {
-                Ok(Some(frame)) => Some(frame),
-                Ok(None) => None,
-                Err(_) => None,
+        let group_data = match handles.group_consumers.get_mut(&group_id) {
+            Some(data) => data,
+            None => return MoqResult::InvalidArgument,
+        };
+
+        // Call read_frame on the consumer
+        let frame_result = RUNTIME.block_on(async { group_data.consumer.read_frame().await });
+
+        match frame_result {
+            Ok(Some(frame)) => {
+                // Increment frame counter to track if we're advancing
+                group_data.current_frame += 1;
+                Some(frame)
             }
-        } else {
-            return MoqResult::InvalidArgument;
+            Ok(None) => None,
+            Err(_e) => None,
         }
     };
-
     match frame_data_opt {
         Some(frame_bytes) => {
             let frame_data = frame_bytes.to_vec(); // Convert Bytes to Vec<u8>
