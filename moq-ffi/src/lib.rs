@@ -410,14 +410,16 @@ pub unsafe extern "C" fn moq_client_connect_with_mode(
                         let publish_origin = moq_lite::Origin::produce();
                         let producer = publish_origin.producer;
                         let consumer = publish_origin.consumer;
-                        let session = moq_lite::Session::connect(connection, Some(consumer), None).await?;
+                        let session =
+                            moq_lite::Session::connect(connection, Some(consumer), None).await?;
                         (session, Some(producer), None)
                     }
                     MoqSessionMode::SubscribeOnly => {
                         let subscribe_origin = moq_lite::Origin::produce();
                         let producer = subscribe_origin.producer;
                         let consumer = subscribe_origin.consumer;
-                        let session = moq_lite::Session::connect(connection, None, Some(producer)).await?;
+                        let session =
+                            moq_lite::Session::connect(connection, None, Some(producer)).await?;
                         (session, None, Some(consumer))
                     }
                     MoqSessionMode::Both => {
@@ -427,12 +429,21 @@ pub unsafe extern "C" fn moq_client_connect_with_mode(
                         let pub_consumer = publish_origin.consumer;
                         let sub_producer = subscribe_origin.producer;
                         let sub_consumer = subscribe_origin.consumer;
-                        let session = moq_lite::Session::connect(connection, Some(pub_consumer), Some(sub_producer)).await?;
+                        let session = moq_lite::Session::connect(
+                            connection,
+                            Some(pub_consumer),
+                            Some(sub_producer),
+                        )
+                        .await?;
                         (session, Some(pub_producer), Some(sub_consumer))
                     }
                 };
 
-                Ok::<_, anyhow::Error>((session, publish_origin_producer, subscribe_origin_consumer))
+                Ok::<_, anyhow::Error>((
+                    session,
+                    publish_origin_producer,
+                    subscribe_origin_consumer,
+                ))
             }) {
                 Ok((session, publish_origin, subscribe_origin)) => {
                     let session_data = SessionData {
@@ -728,9 +739,7 @@ pub unsafe extern "C" fn moq_session_consume(
             // Use the origin consumer to consume broadcasts
             if let Some(ref origin_consumer) = session_data.subscribe_origin {
                 // Wrap in block_on in case consume_broadcast internally uses async operations
-                RUNTIME.block_on(async {
-                    origin_consumer.consume_broadcast(&name)
-                })
+                RUNTIME.block_on(async { origin_consumer.consume_broadcast(&name) })
             } else {
                 None
             }
@@ -802,9 +811,7 @@ pub unsafe extern "C" fn moq_broadcast_consumer_subscribe_track(
         let mut handles = HANDLES.lock().unwrap();
         if let Some(broadcast) = handles.broadcast_consumers.get_mut(&consumer.id) {
             // Wrap in block_on in case subscribe_track internally uses async operations
-            RUNTIME.block_on(async {
-                broadcast.consumer.subscribe_track(&moq_track)
-            })
+            RUNTIME.block_on(async { broadcast.consumer.subscribe_track(&moq_track) })
         } else {
             return MoqResult::InvalidArgument;
         }
@@ -967,7 +974,7 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
     // Get the next group using proper async handling
     let group_consumer_opt = {
         let track_id = track.id;
-        
+
         // Get a reference to the consumer
         let mut consumer = {
             let handles = HANDLES.lock().unwrap();
@@ -978,11 +985,9 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
                 return MoqResult::InvalidArgument;
             }
         }; // MutexGuard is dropped here
-        
+
         // Now call the async operation
-        match RUNTIME.block_on(async move {
-            consumer.next_group().await
-        }) {
+        match RUNTIME.block_on(async move { consumer.next_group().await }) {
             Ok(Some(group)) => Some(group),
             _ => None,
         }
@@ -1036,25 +1041,23 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
     // Get the next frame using proper async handling
     let frame_data_opt = {
         let group_id = group.id;
-        
+
         // Get a mutable reference to the consumer and call read_frame directly
         let mut handles = HANDLES.lock().unwrap();
         let group_data = match handles.group_consumers.get_mut(&group_id) {
             Some(data) => data,
             None => return MoqResult::InvalidArgument,
         };
-        
+
         // Call read_frame on the consumer
-        let frame_result = RUNTIME.block_on(async {
-            group_data.consumer.read_frame().await
-        });
-        
+        let frame_result = RUNTIME.block_on(async { group_data.consumer.read_frame().await });
+
         match frame_result {
             Ok(Some(frame)) => {
                 // Increment frame counter to track if we're advancing
                 group_data.current_frame += 1;
                 Some(frame)
-            },
+            }
             Ok(None) => None,
             Err(_e) => None,
         }
@@ -1062,7 +1065,6 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
 
     match frame_data_opt {
         Some(frame_bytes) => {
-            
             let frame_data = frame_bytes.to_vec(); // Convert Bytes to Vec<u8>
             let len = frame_data.len();
             if len == 0 {
