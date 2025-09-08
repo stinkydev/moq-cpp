@@ -1036,6 +1036,10 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
     data_out: *mut *mut u8,
     data_len_out: *mut usize,
 ) -> MoqResult {
+    if group.is_null() || data_out.is_null() || data_len_out.is_null() {
+        return MoqResult::InvalidArgument;
+    }
+
     let group = &*group;
 
     // Get the next frame using proper async handling
@@ -1062,7 +1066,6 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
             Err(_e) => None,
         }
     };
-
     match frame_data_opt {
         Some(frame_bytes) => {
             let frame_data = frame_bytes.to_vec(); // Convert Bytes to Vec<u8>

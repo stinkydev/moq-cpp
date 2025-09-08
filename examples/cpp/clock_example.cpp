@@ -167,9 +167,6 @@ public:
                 std::string delta(frame_data->begin(), frame_data->end());
                 std::cout << "Delta frame " << frame_count << ": '" << delta << "'" << std::endl;
                 std::cout << "Combined: '" << base << delta << "'" << std::endl;
-                
-                // Add a small delay to prevent tight polling
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
     }
