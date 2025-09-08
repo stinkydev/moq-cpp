@@ -81,6 +81,214 @@ Broadcast
 - **Frames** within a group maintain their order
 - Consumers can process groups as they arrive or wait for specific sequence numbers
 
+## Threading Strategy
+
+### Overview
+
+The MOQ C++ API provides a **blocking interface** over an **asynchronous Rust backend**. Understanding this design is crucial for proper usage:
+
+- **Rust Layer**: Uses Tokio async runtime for all network operations
+- **C++ Layer**: Provides synchronous, blocking methods that internally await async operations
+- **Thread Safety**: The API is **not thread-safe** - external synchronization is required
+
+### Key Threading Principles
+
+#### 1. **One Operation Per Object**
+```cpp
+// ❌ BAD: Concurrent operations on same object
+auto group = track->nextGroup();  // Thread 1
+auto frame = group->readFrame();  // Thread 2 - UNSAFE!
+
+// ✅ GOOD: Sequential operations
+auto group = track->nextGroup();
+auto frame = group->readFrame();
+```
+
+#### 2. **Blocking Operations**
+All MOQ operations are **blocking** and will wait for network I/O:
+```cpp
+// These calls block until data is available or connection fails
+auto group = trackConsumer->nextGroup();      // Waits for next group
+auto frame = groupConsumer->readFrame();      // Waits for next frame
+auto session = client->connect(url);          // Waits for connection
+```
+
+#### 3. **No Internal Threading**
+The C++ wrapper does **not** create background threads. All async work happens in the Rust Tokio runtime, but C++ calls are synchronous.
+
+### Recommended Patterns
+
+#### Pattern 1: **Single-Threaded Consumer**
+```cpp
+void consumeTrack(std::unique_ptr<moq::TrackConsumer> track) {
+    while (true) {
+        auto group = track->nextGroup();  // Blocks until available
+        if (!group) break;  // Connection closed
+        
+        while (true) {
+            auto frame = group->readFrame();  // Blocks until available
+            if (!frame) break;  // No more frames in group
+            
+            processFrame(*frame);  // Your processing logic
+        }
+    }
+}
+```
+
+#### Pattern 2: **Multi-Threaded with External Synchronization**
+```cpp
+class ThreadSafeConsumer {
+private:
+    std::unique_ptr<moq::TrackConsumer> track_;
+    std::mutex track_mutex_;
+    std::queue<std::vector<uint8_t>> frame_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable cv_;
+    std::atomic<bool> stop_{false};
+
+public:
+    void startConsumerThread() {
+        std::thread([this]() {
+            while (!stop_) {
+                std::unique_ptr<moq::GroupConsumer> group;
+                {
+                    std::lock_guard<std::mutex> lock(track_mutex_);
+                    group = track_->nextGroup();  // Blocks
+                }
+                
+                if (!group) break;
+                
+                while (!stop_) {
+                    auto frame = group->readFrame();  // Blocks
+                    if (!frame) break;
+                    
+                    // Add to thread-safe queue
+                    {
+                        std::lock_guard<std::mutex> lock(queue_mutex_);
+                        frame_queue_.push(std::move(*frame));
+                    }
+                    cv_.notify_one();
+                }
+            }
+        }).detach();
+    }
+    
+    std::optional<std::vector<uint8_t>> getFrame() {
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        cv_.wait(lock, [this]() { return !frame_queue_.empty() || stop_; });
+        
+        if (frame_queue_.empty()) return std::nullopt;
+        
+        auto frame = std::move(frame_queue_.front());
+        frame_queue_.pop();
+        return frame;
+    }
+};
+```
+
+#### Pattern 3: **Producer with Background Publishing**
+```cpp
+class AsyncProducer {
+private:
+    std::unique_ptr<moq::TrackProducer> track_;
+    std::queue<std::vector<uint8_t>> send_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable cv_;
+    std::atomic<bool> stop_{false};
+
+public:
+    void startPublisherThread() {
+        std::thread([this]() {
+            uint64_t sequence = 0;
+            
+            while (!stop_) {
+                auto group = track_->createGroup(sequence++);
+                
+                // Send all queued data in this group
+                while (!stop_) {
+                    std::vector<uint8_t> data;
+                    {
+                        std::unique_lock<std::mutex> lock(queue_mutex_);
+                        cv_.wait_for(lock, std::chrono::milliseconds(100), 
+                                   [this]() { return !send_queue_.empty() || stop_; });
+                        
+                        if (send_queue_.empty()) break;  // No data, end group
+                        
+                        data = std::move(send_queue_.front());
+                        send_queue_.pop();
+                    }
+                    
+                    if (!group->writeFrame(data)) break;  // Write failed
+                }
+                
+                group->finish();  // Complete the group
+            }
+        }).detach();
+    }
+    
+    void queueFrame(const std::vector<uint8_t>& data) {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        send_queue_.push(data);
+        cv_.notify_one();
+    }
+};
+```
+
+### Threading Best Practices
+
+#### ✅ **DO:**
+- Use external synchronization (mutexes, atomics) for multi-threading
+- Handle blocking operations appropriately (they may wait indefinitely)
+- Check return values - `nullptr`/`nullopt` indicates connection closed or error
+- Use separate threads for producers and consumers when needed
+- Design your threading model around the blocking nature of operations
+
+#### ❌ **DON'T:**
+- Call methods on the same object from multiple threads simultaneously
+- Assume operations are non-blocking or have timeouts
+- Rely on the API for internal thread management
+- Mix sync/async patterns - stick to the blocking model
+
+### Error Handling in Multi-Threaded Context
+
+```cpp
+void robustConsumer() {
+    try {
+        while (true) {
+            auto group = track_->nextGroup();
+            if (!group) {
+                // Connection closed gracefully
+                break;
+            }
+            
+            while (true) {
+                auto frame = group->readFrame();
+                if (!frame) {
+                    // End of group, not an error
+                    break;
+                }
+                
+                if (!processFrame(*frame)) {
+                    // Processing error, decide whether to continue
+                    continue;  // or break, depending on your needs
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        // Handle connection errors
+        std::cerr << "Consumer error: " << e.what() << std::endl;
+        // Implement reconnection logic if needed
+    }
+}
+```
+
+### Performance Considerations
+
+- **Blocking Calls**: Operations block until network I/O completes
+- **No Timeouts**: Operations may wait indefinitely - implement application-level timeouts if needed
+- **Memory Management**: Objects use RAII - no manual cleanup required
+- **Network Buffering**: The Rust backend handles buffering and flow control
+
 ## Architecture
 
 ```
@@ -392,6 +600,61 @@ int main() {
     
     return 0;
 }
+```
+
+## Threading Quick Reference
+
+### ⚡ **Key Points**
+- **All operations are BLOCKING** - they wait for network I/O
+- **NOT thread-safe** - use external synchronization for multi-threading
+- **No timeouts** - operations may wait indefinitely
+- **RAII cleanup** - objects auto-cleanup when destroyed
+
+### 📋 **Threading Checklist**
+
+**Before implementing multi-threading:**
+- [ ] Do I need multiple threads? (Single-threaded is often simpler)
+- [ ] How will I synchronize access to MOQ objects?
+- [ ] How will I handle blocking operations?
+- [ ] How will I detect and handle connection failures?
+
+**For each MOQ object:**
+- [ ] Only one thread calls methods at a time
+- [ ] Proper mutex protection if shared between threads
+- [ ] Error handling for connection failures
+- [ ] Graceful shutdown mechanism
+
+### 🔄 **Common Patterns**
+
+| Pattern | Use Case | Complexity |
+|---------|----------|------------|
+| **Single-threaded** | Simple consumers/producers | ⭐ Low |
+| **Producer + Consumer threads** | Separate read/write logic | ⭐⭐ Medium |
+| **Thread pool** | Multiple parallel streams | ⭐⭐⭐ High |
+| **Async wrapper** | Non-blocking interface | ⭐⭐⭐⭐ Very High |
+
+### 🚨 **Common Mistakes**
+```cpp
+// ❌ Multiple threads, same object
+std::thread t1([&]() { consumer->nextGroup(); });
+std::thread t2([&]() { consumer->nextGroup(); });  // RACE CONDITION!
+
+// ❌ No error handling
+auto frame = group->readFrame();  // May return nullopt!
+processFrame(*frame);  // CRASH if connection closed!
+
+// ✅ Correct approach
+std::mutex consumer_mutex;
+std::thread t1([&]() {
+    std::lock_guard<std::mutex> lock(consumer_mutex);
+    auto group = consumer->nextGroup();
+    if (group) {
+        auto frame = group->readFrame();
+        if (frame) {
+            processFrame(*frame);
+        }
+    }
+});
 ```
 
 ## API Reference

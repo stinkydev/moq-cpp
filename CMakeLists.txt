@@ -11,19 +11,21 @@ find_program(CARGO_EXECUTABLE cargo REQUIRED)
 set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
 
 # Choose debug or release based on CMAKE_CONFIGURATION_TYPES
-# For multi-config generators like Visual Studio, we'll default to release for better performance
 if(CMAKE_CONFIGURATION_TYPES)
     # Multi-config generator (like Visual Studio)
-    set(RUST_BUILD_TYPE "--release")
-    set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
+    # We need to handle both Debug and Release configurations
+    # For now, force debug mode since it works correctly
+    set(RUST_BUILD_TYPE "")
+    set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
 else()
     # Single-config generator (like Unix Makefiles or Ninja)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(RUST_BUILD_TYPE "")
         set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
     else()
-        set(RUST_BUILD_TYPE "--release")
-        set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
+        # For single-config release, still use debug since it works
+        set(RUST_BUILD_TYPE "")
+        set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
     endif()
 endif()
 

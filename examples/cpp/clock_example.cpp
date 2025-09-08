@@ -138,6 +138,8 @@ public:
                 break;
             }
 
+            std::cout << "Reading new group..." << std::endl;
+
             // Read the base timestamp
             auto base_future = group->readFrame();
             auto base_data = base_future.get();
@@ -148,18 +150,26 @@ public:
             }
 
             std::string base(base_data->begin(), base_data->end());
+            std::cout << "Base frame: '" << base << "'" << std::endl;
 
             // Read subsequent frames (seconds)
+            int frame_count = 0;
             while (true) {
                 auto frame_future = group->readFrame();
                 auto frame_data = frame_future.get();
                 
                 if (!frame_data) {
+                    std::cout << "No more frames in group (read " << frame_count << " frames)" << std::endl;
                     break; // No more frames in this group
                 }
 
+                frame_count++;
                 std::string delta(frame_data->begin(), frame_data->end());
-                std::cout << base << delta << std::endl;
+                std::cout << "Delta frame " << frame_count << ": '" << delta << "'" << std::endl;
+                std::cout << "Combined: '" << base << delta << "'" << std::endl;
+                
+                // Add a small delay to prevent tight polling
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
     }

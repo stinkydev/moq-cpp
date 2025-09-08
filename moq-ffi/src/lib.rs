@@ -7,7 +7,6 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{LazyLock, Mutex};
 use tokio::runtime::Runtime;
-use tokio::sync::oneshot;
 use url::Url;
 
 // Import MOQ libraries
@@ -722,36 +721,27 @@ pub unsafe extern "C" fn moq_session_consume(
         Err(_) => return MoqResult::InvalidArgument,
     };
 
-    // Use a channel to get the result from the async task
-    let (tx, rx) = oneshot::channel();
-
-    // Spawn the async operation on the runtime
-    let session_id = session.id;
-    let name_clone = name.clone(); // Clone name for use in async block
-    RUNTIME.spawn(async move {
-        let consumer = {
-            let mut handles = HANDLES.lock().unwrap();
-            if let Some(session_data) = handles.sessions.get_mut(&session_id) {
-                // Use the origin consumer to consume broadcasts
-                if let Some(ref origin_consumer) = session_data.subscribe_origin {
-                    origin_consumer.consume_broadcast(&name_clone)
-                } else {
-                    None
-                }
+    // Block on the async operation directly
+    let consumer = {
+        let mut handles = HANDLES.lock().unwrap();
+        if let Some(session_data) = handles.sessions.get_mut(&session.id) {
+            // Use the origin consumer to consume broadcasts
+            if let Some(ref origin_consumer) = session_data.subscribe_origin {
+                // Wrap in block_on in case consume_broadcast internally uses async operations
+                RUNTIME.block_on(async {
+                    origin_consumer.consume_broadcast(&name)
+                })
             } else {
                 None
             }
-        };
-        
-        // Send the result back
-        let _ = tx.send(consumer);
-    });
+        } else {
+            None
+        }
+    };
 
-    // Block on the channel to get the result
-    let consumer = match RUNTIME.block_on(rx) {
-        Ok(Some(c)) => c,
-        Ok(None) => return MoqResult::InvalidArgument,
-        Err(_) => return MoqResult::GeneralError,
+    let consumer = match consumer {
+        Some(c) => c,
+        None => return MoqResult::InvalidArgument,
     };
 
     let consumer_id = next_id();
@@ -811,7 +801,10 @@ pub unsafe extern "C" fn moq_broadcast_consumer_subscribe_track(
     let track_consumer = {
         let mut handles = HANDLES.lock().unwrap();
         if let Some(broadcast) = handles.broadcast_consumers.get_mut(&consumer.id) {
-            broadcast.consumer.subscribe_track(&moq_track)
+            // Wrap in block_on in case subscribe_track internally uses async operations
+            RUNTIME.block_on(async {
+                broadcast.consumer.subscribe_track(&moq_track)
+            })
         } else {
             return MoqResult::InvalidArgument;
         }
@@ -971,30 +964,26 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
 
     let track = &*track;
 
-    // Get the next group from the channel using proper async handling
+    // Get the next group using proper async handling
     let group_consumer_opt = {
         let track_id = track.id;
-        let (tx, rx) = oneshot::channel();
-
-        RUNTIME.spawn(async move {
-            // Get a reference to the consumer
-            let mut consumer = {
-                let handles = HANDLES.lock().unwrap();
-                if let Some(track_data) = handles.track_consumers.get(&track_id) {
-                    // Clone what we need before dropping the lock
-                    track_data.consumer.clone()
-                } else {
-                    return;
-                }
-            }; // MutexGuard is dropped here, before the await
-            
-            // Now call the async operation without holding the lock
-            let result = consumer.next_group().await;
-            let _ = tx.send(result);
-        });
-
-        match RUNTIME.block_on(rx) {
-            Ok(Ok(Some(group))) => Some(group),
+        
+        // Get a reference to the consumer
+        let mut consumer = {
+            let handles = HANDLES.lock().unwrap();
+            if let Some(track_data) = handles.track_consumers.get(&track_id) {
+                // Clone what we need before dropping the lock
+                track_data.consumer.clone()
+            } else {
+                return MoqResult::InvalidArgument;
+            }
+        }; // MutexGuard is dropped here
+        
+        // Now call the async operation
+        match RUNTIME.block_on(async move {
+            consumer.next_group().await
+        }) {
+            Ok(Some(group)) => Some(group),
             _ => None,
         }
     };
@@ -1042,42 +1031,38 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
     data_out: *mut *mut u8,
     data_len_out: *mut usize,
 ) -> MoqResult {
-    if group.is_null() || data_out.is_null() || data_len_out.is_null() {
-        return MoqResult::InvalidArgument;
-    }
-
     let group = &*group;
 
     // Get the next frame using proper async handling
     let frame_data_opt = {
         let group_id = group.id;
-        let (tx, rx) = oneshot::channel();
-
-        RUNTIME.spawn(async move {
-            // Get a reference to the consumer
-            let mut consumer = {
-                let handles = HANDLES.lock().unwrap();
-                if let Some(group_data) = handles.group_consumers.get(&group_id) {
-                    // Clone what we need before dropping the lock
-                    group_data.consumer.clone()
-                } else {
-                    return;
-                }
-            }; // MutexGuard is dropped here, before the await
-            
-            // Now call the async operation without holding the lock
-            let result = consumer.read_frame().await;
-            let _ = tx.send(result);
+        
+        // Get a mutable reference to the consumer and call read_frame directly
+        let mut handles = HANDLES.lock().unwrap();
+        let group_data = match handles.group_consumers.get_mut(&group_id) {
+            Some(data) => data,
+            None => return MoqResult::InvalidArgument,
+        };
+        
+        // Call read_frame on the consumer
+        let frame_result = RUNTIME.block_on(async {
+            group_data.consumer.read_frame().await
         });
-
-        match RUNTIME.block_on(rx) {
-            Ok(Ok(Some(frame))) => Some(frame),
-            _ => None,
+        
+        match frame_result {
+            Ok(Some(frame)) => {
+                // Increment frame counter to track if we're advancing
+                group_data.current_frame += 1;
+                Some(frame)
+            },
+            Ok(None) => None,
+            Err(_e) => None,
         }
     };
 
     match frame_data_opt {
         Some(frame_bytes) => {
+            
             let frame_data = frame_bytes.to_vec(); // Convert Bytes to Vec<u8>
             let len = frame_data.len();
             if len == 0 {

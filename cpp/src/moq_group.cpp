@@ -1,6 +1,7 @@
 #include "moq/group.h"
 #include <thread>
 #include <chrono>
+#include <iostream>
 
 // Include the generated C header
 extern "C" {
