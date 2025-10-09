@@ -102,6 +102,7 @@ struct TrackProducerData {
 /// Track consumer data
 #[allow(dead_code)]
 struct TrackConsumerData {
+    session_id: u64,  // Track which session this consumer belongs to
     broadcast_id: u64,
     name: String,
     priority: u8,
@@ -121,6 +122,7 @@ struct GroupProducerData {
 /// Group consumer data
 #[allow(dead_code)]
 struct GroupConsumerData {
+    session_id: u64,  // Track which session this consumer belongs to
     track_id: u64,
     sequence: u64,
     consumer: GroupConsumer,
@@ -817,7 +819,18 @@ pub unsafe extern "C" fn moq_broadcast_consumer_subscribe_track(
         }
     };
 
+    // Get the session_id from the broadcast consumer
+    let session_id = {
+        let handles = HANDLES.lock().unwrap();
+        if let Some(broadcast) = handles.broadcast_consumers.get(&consumer.id) {
+            broadcast.session_id
+        } else {
+            return MoqResult::InvalidArgument;
+        }
+    };
+
     let track_data = TrackConsumerData {
+        session_id,
         broadcast_id: consumer.id,
         name: track_name,
         priority: track_info.priority,
@@ -975,30 +988,69 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
     let group_consumer_opt = {
         let track_id = track.id;
 
-        // Get a reference to the consumer
-        let mut consumer = {
-            let handles = HANDLES.lock().unwrap();
-            if let Some(track_data) = handles.track_consumers.get(&track_id) {
-                // Clone what we need before dropping the lock
-                track_data.consumer.clone()
+        // Temporarily remove the consumer from the map to avoid holding the mutex
+        // during the blocking async operation
+        let (mut consumer, session_id) = {
+            let mut handles = HANDLES.lock().unwrap();
+            if let Some(track_data) = handles.track_consumers.remove(&track_id) {
+                // Check if the session still exists
+                if !handles.sessions.contains_key(&track_data.session_id) {
+                    // Session was closed, return immediately with null group
+                    // Restore the track consumer first
+                    handles.track_consumers.insert(track_id, track_data);
+                    drop(handles);
+                    *group_out = ptr::null_mut();
+                    return MoqResult::Success;
+                }
+                let session_id = track_data.session_id;
+                let consumer = track_data.consumer.clone();
+                // Restore the track data
+                handles.track_consumers.insert(track_id, track_data);
+                (consumer, session_id)
             } else {
                 return MoqResult::InvalidArgument;
             }
         }; // MutexGuard is dropped here
 
-        // Now call the async operation
-        match RUNTIME.block_on(async move { consumer.next_group().await }) {
-            Ok(Some(group)) => Some(group),
-            _ => None,
+        // Now call the async operation with timeout loop to check if session closes
+        loop {
+            // Check if session still exists before waiting
+            {
+                let handles = HANDLES.lock().unwrap();
+                if !handles.sessions.contains_key(&session_id) {
+                    // Session was closed while we were waiting
+                    *group_out = ptr::null_mut();
+                    return MoqResult::Success;
+                }
+            }
+            
+            // Try to get next group with a short timeout
+            match RUNTIME.block_on(async {
+                tokio::time::timeout(
+                    tokio::time::Duration::from_millis(500),
+                    consumer.next_group()
+                ).await
+            }) {
+                Ok(Ok(Some(group))) => {
+                    break Some((group, session_id));  // Return both group and session_id
+                }
+                Ok(Ok(None)) => break None,  // Stream ended
+                Ok(Err(_)) => break None,     // Error
+                Err(_) => {
+                    // Timeout - loop back to check session status
+                    continue;
+                }
+            }
         }
     };
 
     match group_consumer_opt {
-        Some(group_consumer) => {
+        Some((group_consumer, session_id)) => {
             let group_id = next_id();
             let sequence = 0; // TODO: Get actual sequence from group
 
             let group_data = GroupConsumerData {
+                session_id,
                 track_id: track.id,
                 sequence,
                 consumer: group_consumer,
@@ -1042,30 +1094,51 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
 
     let group = &*group;
 
-    // Get the next frame using proper async handling
-    // We need to extract the consumer from the HANDLES map temporarily to avoid deadlock
+    // Get the next frame using proper async handling with timeout loop
     let frame_data_opt = {
         let group_id = group.id;
 
-        // Take ownership of the consumer temporarily
-        let mut consumer_temp = {
+        // Take ownership of the consumer temporarily and get session_id
+        let (mut consumer_temp, session_id) = {
             let mut handles = HANDLES.lock().unwrap();
             match handles.group_consumers.remove(&group_id) {
-                Some(data) => data,
+                Some(data) => {
+                    let session_id = data.session_id;
+                    (data, session_id)
+                }
                 None => return MoqResult::InvalidArgument,
             }
         }; // MutexGuard is dropped here
 
-        // Call read_frame on the consumer without holding the mutex
-        let frame_result = RUNTIME.block_on(async { consumer_temp.consumer.read_frame().await });
-
-        let frame_opt = match frame_result {
-            Ok(Some(frame)) => {
-                consumer_temp.current_frame += 1;
-                Some(frame)
+        // Call read_frame with timeout loop to check if session closes
+        let frame_opt = loop {
+            // Check if session still exists before waiting
+            {
+                let handles = HANDLES.lock().unwrap();
+                if !handles.sessions.contains_key(&session_id) {
+                    // Session was closed while we were waiting
+                    break None;
+                }
             }
-            Ok(None) => None,
-            Err(_e) => None,
+            
+            // Try to read frame with a short timeout
+            match RUNTIME.block_on(async {
+                tokio::time::timeout(
+                    tokio::time::Duration::from_millis(500),
+                    consumer_temp.consumer.read_frame()
+                ).await
+            }) {
+                Ok(Ok(Some(frame))) => {
+                    consumer_temp.current_frame += 1;
+                    break Some(frame);
+                }
+                Ok(Ok(None)) => break None,  // No more frames
+                Ok(Err(_)) => break None,     // Error
+                Err(_) => {
+                    // Timeout - loop back to check session status
+                    continue;
+                }
+            }
         };
 
         // Put the consumer back into the map
