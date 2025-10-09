@@ -1046,25 +1046,33 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
     let frame_data_opt = {
         let group_id = group.id;
 
-        // Get a mutable reference to the consumer and call read_frame directly
-        let mut handles = HANDLES.lock().unwrap();
-        let group_data = match handles.group_consumers.get_mut(&group_id) {
-            Some(data) => data,
-            None => return MoqResult::InvalidArgument,
-        };
-
-        // Call read_frame on the consumer
-        let frame_result = RUNTIME.block_on(async { group_data.consumer.read_frame().await });
-
-        match frame_result {
-            Ok(Some(frame)) => {
-                // Increment frame counter to track if we're advancing
-                group_data.current_frame += 1;
-                Some(frame)
+        // Get a clone of the consumer to avoid holding the mutex during async operation
+        let mut consumer = {
+            let handles = HANDLES.lock().unwrap();
+            match handles.group_consumers.get(&group_id) {
+                Some(data) => data.consumer.clone(),
+                None => return MoqResult::InvalidArgument,
             }
+        }; // MutexGuard is dropped here
+
+        // Call read_frame on the consumer without holding the mutex
+        let frame_result = RUNTIME.block_on(async { consumer.read_frame().await });
+
+        let frame_opt = match frame_result {
+            Ok(Some(frame)) => Some(frame),
             Ok(None) => None,
             Err(_e) => None,
+        };
+
+        // Now update the frame counter while holding the mutex
+        if frame_opt.is_some() {
+            let mut handles = HANDLES.lock().unwrap();
+            if let Some(group_data) = handles.group_consumers.get_mut(&group_id) {
+                group_data.current_frame += 1;
+            }
         }
+
+        frame_opt
     };
     match frame_data_opt {
         Some(frame_bytes) => {
