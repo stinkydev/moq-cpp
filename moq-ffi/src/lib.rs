@@ -1043,33 +1043,35 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
     let group = &*group;
 
     // Get the next frame using proper async handling
+    // We need to extract the consumer from the HANDLES map temporarily to avoid deadlock
     let frame_data_opt = {
         let group_id = group.id;
 
-        // Get a clone of the consumer to avoid holding the mutex during async operation
-        let mut consumer = {
-            let handles = HANDLES.lock().unwrap();
-            match handles.group_consumers.get(&group_id) {
-                Some(data) => data.consumer.clone(),
+        // Take ownership of the consumer temporarily
+        let mut consumer_temp = {
+            let mut handles = HANDLES.lock().unwrap();
+            match handles.group_consumers.remove(&group_id) {
+                Some(data) => data,
                 None => return MoqResult::InvalidArgument,
             }
         }; // MutexGuard is dropped here
 
         // Call read_frame on the consumer without holding the mutex
-        let frame_result = RUNTIME.block_on(async { consumer.read_frame().await });
+        let frame_result = RUNTIME.block_on(async { consumer_temp.consumer.read_frame().await });
 
         let frame_opt = match frame_result {
-            Ok(Some(frame)) => Some(frame),
+            Ok(Some(frame)) => {
+                consumer_temp.current_frame += 1;
+                Some(frame)
+            }
             Ok(None) => None,
             Err(_e) => None,
         };
 
-        // Now update the frame counter while holding the mutex
-        if frame_opt.is_some() {
+        // Put the consumer back into the map
+        {
             let mut handles = HANDLES.lock().unwrap();
-            if let Some(group_data) = handles.group_consumers.get_mut(&group_id) {
-                group_data.current_frame += 1;
-            }
+            handles.group_consumers.insert(group_id, consumer_temp);
         }
 
         frame_opt
