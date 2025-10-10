@@ -990,7 +990,7 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
 
         // Temporarily remove the consumer from the map to avoid holding the mutex
         // during the blocking async operation
-        let (mut consumer, session_id) = {
+        let (mut track_data, session_id) = {
             let mut handles = HANDLES.lock().unwrap();
             if let Some(track_data) = handles.track_consumers.remove(&track_id) {
                 // Check if the session still exists
@@ -1003,32 +1003,30 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
                     return MoqResult::Success;
                 }
                 let session_id = track_data.session_id;
-                let consumer = track_data.consumer.clone();
-                // Restore the track data
-                handles.track_consumers.insert(track_id, track_data);
-                (consumer, session_id)
+                // Take ownership of the entire track_data - don't clone the consumer
+                (track_data, session_id)
             } else {
                 return MoqResult::InvalidArgument;
             }
         }; // MutexGuard is dropped here
 
         // Now call the async operation with timeout loop to check if session closes
-        loop {
+        let result = loop {
             // Check if session still exists before waiting
             {
                 let handles = HANDLES.lock().unwrap();
                 if !handles.sessions.contains_key(&session_id) {
                     // Session was closed while we were waiting
-                    *group_out = ptr::null_mut();
-                    return MoqResult::Success;
+                    break None;
                 }
             }
             
             // Try to get next group with a short timeout
+            // Work directly with the consumer in track_data to maintain state
             match RUNTIME.block_on(async {
                 tokio::time::timeout(
                     tokio::time::Duration::from_millis(500),
-                    consumer.next_group()
+                    track_data.consumer.next_group()
                 ).await
             }) {
                 Ok(Ok(Some(group))) => {
@@ -1041,7 +1039,15 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
                     continue;
                 }
             }
+        };
+
+        // Restore the track_data back to the map before returning
+        {
+            let mut handles = HANDLES.lock().unwrap();
+            handles.track_consumers.insert(track_id, track_data);
         }
+
+        result
     };
 
     match group_consumer_opt {
