@@ -102,7 +102,7 @@ struct TrackProducerData {
 /// Track consumer data
 #[allow(dead_code)]
 struct TrackConsumerData {
-    session_id: u64,  // Track which session this consumer belongs to
+    session_id: u64, // Track which session this consumer belongs to
     broadcast_id: u64,
     name: String,
     priority: u8,
@@ -122,7 +122,7 @@ struct GroupProducerData {
 /// Group consumer data
 #[allow(dead_code)]
 struct GroupConsumerData {
-    session_id: u64,  // Track which session this consumer belongs to
+    session_id: u64, // Track which session this consumer belongs to
     track_id: u64,
     sequence: u64,
     consumer: GroupConsumer,
@@ -1020,20 +1020,21 @@ pub unsafe extern "C" fn moq_track_consumer_next_group(
                     break None;
                 }
             }
-            
+
             // Try to get next group with a short timeout
             // Work directly with the consumer in track_data to maintain state
             match RUNTIME.block_on(async {
                 tokio::time::timeout(
                     tokio::time::Duration::from_millis(500),
-                    track_data.consumer.next_group()
-                ).await
+                    track_data.consumer.next_group(),
+                )
+                .await
             }) {
                 Ok(Ok(Some(group))) => {
-                    break Some((group, session_id));  // Return both group and session_id
+                    break Some((group, session_id)); // Return both group and session_id
                 }
-                Ok(Ok(None)) => break None,  // Stream ended
-                Ok(Err(_)) => break None,     // Error
+                Ok(Ok(None)) => break None, // Stream ended
+                Ok(Err(_)) => break None,   // Error
                 Err(_) => {
                     // Timeout - loop back to check session status
                     continue;
@@ -1126,20 +1127,21 @@ pub unsafe extern "C" fn moq_group_consumer_read_frame(
                     break None;
                 }
             }
-            
+
             // Try to read frame with a short timeout
             match RUNTIME.block_on(async {
                 tokio::time::timeout(
                     tokio::time::Duration::from_millis(500),
-                    consumer_temp.consumer.read_frame()
-                ).await
+                    consumer_temp.consumer.read_frame(),
+                )
+                .await
             }) {
                 Ok(Ok(Some(frame))) => {
                     consumer_temp.current_frame += 1;
                     break Some(frame);
                 }
-                Ok(Ok(None)) => break None,  // No more frames
-                Ok(Err(_)) => break None,     // Error
+                Ok(Ok(None)) => break None, // No more frames
+                Ok(Err(_)) => break None,   // Error
                 Err(_) => {
                     // Timeout - loop back to check session status
                     continue;
