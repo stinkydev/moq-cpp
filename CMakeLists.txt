@@ -114,8 +114,11 @@ target_link_libraries(moq_cpp PUBLIC moq_ffi)
 add_executable(moq_clock_example examples/cpp/clock_example.cpp)
 target_link_libraries(moq_clock_example moq_cpp)
 
-add_executable(moq_relay_test examples/cpp/relay_test.cpp)
-target_link_libraries(moq_relay_test moq_cpp)
+# Relay test is Windows-only due to use of conio.h
+if(WIN32)
+    add_executable(moq_relay_test examples/cpp/relay_test.cpp)
+    target_link_libraries(moq_relay_test moq_cpp)
+endif()
 
 # Test executable for CI
 add_executable(moq_test test/basic_test.cpp)
