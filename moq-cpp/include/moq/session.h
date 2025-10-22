@@ -21,6 +21,11 @@ public:
     /// @return true if connected, false otherwise
     bool isConnected() const;
 
+    /// Check if the session is still alive (non-blocking poll)
+    /// Returns false if the session has been terminated or closed
+    /// @return true if session is alive, false if closed/terminated
+    bool isAlive() const;
+
     /// Close the session
     void close();
 

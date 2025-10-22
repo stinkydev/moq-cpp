@@ -6,6 +6,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use url::Url;
 
@@ -533,6 +534,35 @@ pub unsafe extern "C" fn moq_session_close(session: *mut MoqSession) -> MoqResul
         MoqResult::Success
     } else {
         MoqResult::InvalidArgument
+    }
+}
+
+/// Check if a MOQ session is still alive (blocking call)
+/// Returns true if session is alive, false if closed/terminated
+/// This is a blocking call that will check the session state
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_is_alive(session: *const MoqSession) -> bool {
+    if session.is_null() {
+        return false;
+    }
+
+    let session = &*session;
+    let handles = HANDLES.lock().unwrap();
+
+    if let Some(session_data) = handles.sessions.get(&session.id) {
+        // Create a clone of the session to check its state
+        // This is a blocking operation that checks if the session is closed
+        let session_closed_future = session_data.session.closed();
+
+        // Use runtime to block on the future with a very short timeout
+        // If it times out, the session is still alive; if it completes, it's closed
+        RUNTIME
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(1), session_closed_future).await
+            })
+            .is_err()
+    } else {
+        false
     }
 }
 

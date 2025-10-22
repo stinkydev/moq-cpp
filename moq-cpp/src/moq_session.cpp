@@ -26,6 +26,14 @@ bool Session::isConnected() const {
     return moq_session_is_connected(static_cast<const MoqSession*>(handle_));
 }
 
+// Check if session is still alive
+bool Session::isAlive() const {
+    if (!handle_) {
+        return false;
+    }
+    return moq_session_is_alive(static_cast<const MoqSession*>(handle_));
+}
+
 // Close the session
 void Session::close() {
     if (handle_) {
