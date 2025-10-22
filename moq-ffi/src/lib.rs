@@ -556,12 +556,11 @@ pub unsafe extern "C" fn moq_session_is_alive(session: *const MoqSession) -> boo
 
         // Use runtime to block on the future with a very short timeout
         // If it times out, the session is still alive; if it completes, it's closed
-        match RUNTIME.block_on(async {
-            tokio::time::timeout(Duration::from_millis(1), session_closed_future).await
-        }) {
-            Ok(_) => false, // Session closed future completed - session is closed
-            Err(_) => true, // Timeout - session is still alive
-        }
+        RUNTIME
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(1), session_closed_future).await
+            })
+            .is_err()
     } else {
         false
     }

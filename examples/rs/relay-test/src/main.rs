@@ -466,7 +466,7 @@ impl RelayTestApp {
             println!("Broadcast: {}", self.config.broadcast);
         }
         println!("Active subscriptions: {}", self.active_subscribers.len());
-        for (track_name, _) in &self.active_subscribers {
+        for track_name in self.active_subscribers.keys() {
             let bytes = self.track_stats.get(track_name).unwrap_or(&0);
             println!("  - {}: {} bytes", track_name, bytes);
         }
