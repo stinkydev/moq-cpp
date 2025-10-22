@@ -162,17 +162,21 @@ elseif(WIN32)
 endif()
 
 # Installation
-install(TARGETS moq_cpp
+install(TARGETS moq_cpp moq_mgr
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY cpp/include/
+# Install C++ wrapper headers
+install(DIRECTORY moq-cpp/include/
     DESTINATION include
     FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
 )
 
-install(FILES ${RUST_LIB_DIR}/${RUST_LIB_NAME}
-    DESTINATION lib
+# Install MOQ Manager headers
+install(DIRECTORY moq-mgr/include/
+    DESTINATION include
+    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
 )
+
