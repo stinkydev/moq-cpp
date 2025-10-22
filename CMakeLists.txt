@@ -59,49 +59,65 @@ set_target_properties(moq_ffi PROPERTIES
 add_dependencies(moq_ffi rust_lib)
 
 # Verify C++ headers exist
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/client.h")
-    message(FATAL_ERROR "Required header cpp/include/moq/client.h not found")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/client.h")
+    message(FATAL_ERROR "Required header moq-cpp/include/moq/client.h not found")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/session.h")
-    message(FATAL_ERROR "Required header cpp/include/moq/session.h not found")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/session.h")
+    message(FATAL_ERROR "Required header moq-cpp/include/moq/session.h not found")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/moq.h")
-    message(FATAL_ERROR "Required header cpp/include/moq/moq.h not found")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/moq.h")
+    message(FATAL_ERROR "Required header moq-cpp/include/moq/moq.h not found")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/track.h")
-    message(FATAL_ERROR "Required header cpp/include/moq/track.h not found")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/track.h")
+    message(FATAL_ERROR "Required header moq-cpp/include/moq/track.h not found")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/broadcast.h")
-    message(FATAL_ERROR "Required header cpp/include/moq/broadcast.h not found")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/broadcast.h")
+    message(FATAL_ERROR "Required header moq-cpp/include/moq/broadcast.h not found")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/include/moq/group.h")
-    message(FATAL_ERROR "Required header cpp/include/moq/group.h not found")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/group.h")
+    message(FATAL_ERROR "Required header moq-cpp/include/moq/group.h not found")
 endif()
 
 # C++ wrapper library
 add_library(moq_cpp STATIC
-    cpp/src/moq_client.cpp
-    cpp/src/moq_session.cpp
-    cpp/src/moq_track.cpp
-    cpp/src/moq_broadcast.cpp
-    cpp/src/moq_group.cpp
+    moq-cpp/src/moq_client.cpp
+    moq-cpp/src/moq_session.cpp
+    moq-cpp/src/moq_track.cpp
+    moq-cpp/src/moq_broadcast.cpp
+    moq-cpp/src/moq_group.cpp
 )
 
 # Set include directories with absolute paths
 target_include_directories(moq_cpp PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi/include>
     $<INSTALL_INTERFACE:include>
 )
 
 # Debug include paths
-message(STATUS "MOQ C++ include path: ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include")
+message(STATUS "MOQ C++ include path: ${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include")
 message(STATUS "MOQ FFI include path: ${RUST_TARGET_DIR}/release/moq-ffi/include")
 
 # Ensure headers are generated before compiling C++
 add_dependencies(moq_cpp rust_lib)
 
 target_link_libraries(moq_cpp PUBLIC moq_ffi)
+
+add_library(moq_mgr STATIC
+    moq-mgr/src/moq-mgr-session.cc
+    moq-mgr/src/moq-mgr-producer.cc
+    moq-mgr/src/moq-mgr-consumer.cc
+)
+
+target_include_directories(moq_mgr PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+add_dependencies(moq_mgr moq_cpp)
+target_link_libraries(moq_mgr PUBLIC moq_cpp)
 
 # Example executables
 # Note: Old examples are temporarily disabled due to API changes
