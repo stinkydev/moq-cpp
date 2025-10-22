@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(moq-c-api VERSION 0.1.2 LANGUAGES CXX)
+project(moq-c-api VERSION 0.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -134,6 +134,10 @@ target_link_libraries(moq_clock_example moq_cpp)
 if(WIN32)
     add_executable(moq_relay_test examples/cpp/relay_test.cpp)
     target_link_libraries(moq_relay_test moq_cpp)
+    
+    # Relay test using MOQ Manager abstraction
+    add_executable(moq_relay_test_mgr examples/cpp/relay_test_mgr.cpp)
+    target_link_libraries(moq_relay_test_mgr moq_mgr)
 endif()
 
 # Test executable for CI

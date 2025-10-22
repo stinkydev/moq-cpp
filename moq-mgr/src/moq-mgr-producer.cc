@@ -58,8 +58,8 @@ bool Producer::is_running() const {
 
 void Producer::producer_loop() {
   bool moq_setup = false;
-  auto last_retry_time = std::chrono::steady_clock::now();
-  const auto retry_interval = std::chrono::seconds(5);
+  auto last_retry_time = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+  const auto retry_interval = std::chrono::seconds(3);
   
   while (running_.load()) {
     try {

@@ -169,7 +169,33 @@ cd build && ninja
 # Run the clock example
 ./moq_clock_example https://moq.sesame-streams.com:4443 publish --broadcast clock
 ./moq_clock_example https://moq.sesame-streams.com:4443 subscribe --broadcast clock
+
+# Run the relay test (direct MOQ API)
+./moq_relay_test --url https://relay2.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio
+
+# Run the relay test with MOQ Manager (simplified abstraction)
+./moq_relay_test_mgr --url https://relay2.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio
 ```
+
+## Examples
+
+### relay_test.cpp vs relay_test_mgr.cpp
+
+Two equivalent examples are provided to demonstrate different API approaches:
+
+**`relay_test.cpp`** - Uses the direct MOQ API with manual session/broadcast/track management:
+- Manual connection lifecycle management
+- Explicit track subscription/unsubscription controls
+- Direct handling of MOQ groups and frames
+- More control but requires more code
+
+**`relay_test_mgr.cpp`** - Uses the MOQ Manager abstraction for simplified session management:
+- Automatic session lifecycle management with reconnection
+- All configured tracks are subscribed automatically when connecting
+- Simplified data handling through callbacks
+- Less control but much simpler code
+
+The MOQ Manager approach is recommended for applications that don't need fine-grained control over individual track subscriptions and prefer automatic session management.
 
 ## Architecture Notes
 

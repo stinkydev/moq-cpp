@@ -34,7 +34,6 @@ void Consumer::start() {
   running_.store(true);
 
   try {
-    // Start the worker thread - it will handle subscription establishment with retry logic
     worker_thread_ = std::thread(&Consumer::consumer_loop, this);
   } catch (const std::exception& e) {
     running_.store(false);
@@ -59,8 +58,8 @@ bool Consumer::is_running() const {
 
 void Consumer::consumer_loop() {
   bool subscription_established = false;
-  auto last_retry_time = std::chrono::steady_clock::now();
-  const auto retry_interval = std::chrono::seconds(5);
+  auto last_retry_time = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+  const auto retry_interval = std::chrono::seconds(3);
   
   while (running_.load()) {
     try {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -27,6 +28,7 @@ class Session {
   struct SessionConfig {
     std::string moq_server;
     std::string moq_namespace;
+    bool reconnect_on_failure{true};
   };
 
   explicit Session(const SessionConfig& config, moq::SessionMode mode);
@@ -55,8 +57,13 @@ class Session {
 
  protected:
   moq::SessionMode mode_;
+  
+  // Reconnection timing
+  std::chrono::steady_clock::time_point last_reconnect_attempt_{};
+  bool first_reconnect_attempt_{true};
 
   void session_loop();
+  bool reconnect();
 
   virtual void stop_all_workers() = 0;
   virtual void start_all_workers() = 0;
