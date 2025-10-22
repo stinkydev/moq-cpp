@@ -58,26 +58,6 @@ set_target_properties(moq_ffi PROPERTIES
 
 add_dependencies(moq_ffi rust_lib)
 
-# Verify C++ headers exist
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/client.h")
-    message(FATAL_ERROR "Required header moq-cpp/include/moq/client.h not found")
-endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/session.h")
-    message(FATAL_ERROR "Required header moq-cpp/include/moq/session.h not found")
-endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/moq.h")
-    message(FATAL_ERROR "Required header moq-cpp/include/moq/moq.h not found")
-endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/track.h")
-    message(FATAL_ERROR "Required header moq-cpp/include/moq/track.h not found")
-endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/broadcast.h")
-    message(FATAL_ERROR "Required header moq-cpp/include/moq/broadcast.h not found")
-endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include/moq/group.h")
-    message(FATAL_ERROR "Required header moq-cpp/include/moq/group.h not found")
-endif()
-
 # C++ wrapper library
 add_library(moq_cpp STATIC
     moq-cpp/src/moq_client.cpp
@@ -178,5 +158,15 @@ install(DIRECTORY moq-cpp/include/
 install(DIRECTORY moq-mgr/include/
     DESTINATION include
     FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+)
+
+# Install FFI header
+install(FILES moq-ffi/include/moq_ffi.h
+    DESTINATION include
+)
+
+# Install Rust library
+install(FILES ${RUST_LIB_DIR}/${RUST_LIB_NAME}
+    DESTINATION lib
 )
 
