@@ -65,6 +65,7 @@ add_library(moq_cpp STATIC
     moq-cpp/src/moq_track.cpp
     moq-cpp/src/moq_broadcast.cpp
     moq-cpp/src/moq_group.cpp
+    moq-cpp/src/moq_origin.cpp
 )
 
 # Set include directories with absolute paths
@@ -108,7 +109,7 @@ target_link_libraries(moq_mgr PUBLIC moq_cpp)
 # target_link_libraries(moq_pub_sub_example moq_cpp)
 
 add_executable(moq_clock_example examples/cpp/clock_example.cpp)
-target_link_libraries(moq_clock_example moq_cpp)
+target_link_libraries(moq_clock_example moq_cpp moq_ffi)
 
 # Relay test is Windows-only due to use of conio.h
 if(WIN32)

@@ -201,7 +201,9 @@ bool Session::reconnect() {
 
 void ConsumerSession::start_all_workers() {
   consumers_.clear();
+  announced_consumers_.clear();
 
+  // Start consumers for pre-configured subscriptions  
   for (size_t i = 0; i < subscriptions_.size(); ++i) {
     const auto& subscription_config = subscriptions_[i];
     
@@ -211,6 +213,17 @@ void ConsumerSession::start_all_workers() {
     
     consumer->start();
     consumers_.push_back(std::move(consumer));
+  }
+
+  // Start announcement monitoring
+  if (moq_session_) {
+    origin_consumer_ = moq_session_->getOriginConsumer();
+    if (origin_consumer_) {
+      announcement_thread_ = std::thread(&ConsumerSession::announcement_loop, this);
+      notify_status("Started announcement monitoring");
+    } else {
+      notify_error("Failed to create origin consumer for announcements");
+    }
   }
 }
 
@@ -231,13 +244,27 @@ void ProducerSession::start_all_workers() {
 
 void ConsumerSession::cleanup_connections() {
   consumers_.clear();
+  announced_consumers_.clear();
+  origin_consumer_.reset();
   moq_session_.reset();
   moq_client_.reset();
 }
 
 void ConsumerSession::stop_all_workers() {
-  // Stop all consumers (they will join their own threads)
+  // Stop announcement monitoring
+  if (announcement_thread_.joinable()) {
+    announcement_thread_.join();
+  }
+
+  // Stop all pre-configured consumers
   for (auto& consumer : consumers_) {
+    if (consumer) {
+      consumer->stop();
+    }
+  }
+
+  // Stop all announcement-based consumers
+  for (auto& [path, consumer] : announced_consumers_) {
     if (consumer) {
       consumer->stop();
     }
@@ -271,4 +298,68 @@ void Session::notify_status(const std::string& status) {
   }
 }
 
-}  // namespace moq_cro_bridge
+void ConsumerSession::announcement_loop() {
+  size_t next_consumer_id = subscriptions_.size(); // Start IDs after pre-configured consumers
+  
+  while (running_ && origin_consumer_) {
+    try {
+      // Try to get announcements (non-blocking)
+      auto announce = origin_consumer_->tryAnnounced();
+      
+      if (announce) {
+        const std::string& path = announce->path;
+        
+        if (announce->active) {
+          // New broadcast announced
+          if (announced_consumers_.find(path) == announced_consumers_.end()) {
+            notify_status("New broadcast announced: " + path);
+            
+            // Create a consumer for any announced broadcast using default subscription config
+            // If we have subscription configurations, use the first one as template
+            if (!subscriptions_.empty()) {
+              try {
+                Consumer::SubscriptionConfig announcement_config = subscriptions_[0];
+                // You could customize the config here based on the announced path
+                
+                auto consumer = std::make_unique<Consumer>(
+                    next_consumer_id++, path, announcement_config, moq_session_);
+                
+                consumer->start();
+                announced_consumers_[path] = std::move(consumer);
+                notify_status("Started consumer for announced broadcast: " + path);
+              } catch (const std::exception& e) {
+                notify_error("Failed to start consumer for announced broadcast " + path + ": " + e.what());
+              }
+            } else {
+              notify_status("No subscription configuration available for announced broadcast: " + path);
+            }
+          }
+        } else {
+          // Broadcast ended
+          auto it = announced_consumers_.find(path);
+          if (it != announced_consumers_.end()) {
+            notify_status("Broadcast ended: " + path);
+            
+            if (it->second) {
+              it->second->stop();
+            }
+            announced_consumers_.erase(it);
+            notify_status("Stopped consumer for ended broadcast: " + path);
+          }
+        }
+      } else {
+        // No announcements available, sleep briefly to avoid busy waiting
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    } catch (const std::exception& e) {
+      if (running_) {
+        notify_error("Error in announcement loop: " + std::string(e.what()));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
+    }
+  }
+  
+  notify_status("Announcement monitoring stopped");
+}
+
+}  // namespace moq_mgr

@@ -10,6 +10,7 @@ namespace moq {
 /// Forward declarations
 class BroadcastProducer;
 class BroadcastConsumer;
+class OriginConsumer;
 
 /// MOQ Session class - represents a connection to a MOQ server
 class Session {
@@ -39,6 +40,10 @@ public:
     /// @param broadcast_name Name of the broadcast to consume
     /// @return Unique pointer to a BroadcastConsumer on success, nullptr on failure
     std::unique_ptr<BroadcastConsumer> consume(const std::string& broadcast_name);
+
+    /// Get the origin consumer for announcements
+    /// @return Unique pointer to an OriginConsumer on success, nullptr on failure
+    std::unique_ptr<OriginConsumer> getOriginConsumer();
 
 private:
     friend class Client;

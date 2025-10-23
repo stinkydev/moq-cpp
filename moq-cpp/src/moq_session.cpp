@@ -1,5 +1,6 @@
 #include "moq/session.h"
 #include "moq/broadcast.h"
+#include "moq/origin.h"
 
 // Include the generated C header
 extern "C" {
@@ -73,6 +74,25 @@ std::unique_ptr<BroadcastConsumer> Session::consume(const std::string& broadcast
     
     if (result == MoqResult::Success && consumer) {
         return std::unique_ptr<BroadcastConsumer>(new BroadcastConsumer(consumer));
+    }
+    
+    return nullptr;
+}
+
+// Get the origin consumer for announcements  
+std::unique_ptr<OriginConsumer> Session::getOriginConsumer() {
+    if (!handle_) {
+        return nullptr;
+    }
+    
+    MoqOriginConsumer* origin_consumer = nullptr;
+    MoqResult result = moq_session_get_origin_consumer(
+        static_cast<MoqSession*>(handle_),
+        &origin_consumer
+    );
+    
+    if (result == MoqResult::Success && origin_consumer) {
+        return std::unique_ptr<OriginConsumer>(new OriginConsumer(origin_consumer));
     }
     
     return nullptr;

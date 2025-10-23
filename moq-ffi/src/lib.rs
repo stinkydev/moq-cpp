@@ -42,6 +42,7 @@ struct HandleStorage {
     track_consumers: HashMap<u64, TrackConsumerData>,
     group_producers: HashMap<u64, GroupProducerData>,
     group_consumers: HashMap<u64, GroupConsumerData>,
+    origin_consumers: HashMap<u64, OriginConsumerData>,
 }
 
 impl HandleStorage {
@@ -55,6 +56,7 @@ impl HandleStorage {
             track_consumers: HashMap::new(),
             group_producers: HashMap::new(),
             group_consumers: HashMap::new(),
+            origin_consumers: HashMap::new(),
         }
     }
 }
@@ -128,6 +130,13 @@ struct GroupConsumerData {
     sequence: u64,
     consumer: GroupConsumer,
     current_frame: usize,
+}
+
+/// Origin consumer data
+#[allow(dead_code)]
+struct OriginConsumerData {
+    session_id: u64, // Track which session this consumer belongs to
+    consumer: moq_lite::OriginConsumer,
 }
 
 /// Result codes for MOQ operations
@@ -207,11 +216,36 @@ pub struct MoqGroupConsumer {
     pub id: u64,
 }
 
+/// Opaque handle for a MOQ origin consumer (for announcements)
+#[repr(C)]
+pub struct MoqOriginConsumer {
+    pub id: u64,
+}
+
 /// Track information
 #[repr(C)]
 pub struct MoqTrack {
     pub name: *const c_char,
     pub priority: u8,
+}
+
+/// Announced broadcast information
+#[repr(C)]
+pub struct MoqAnnounce {
+    /// The path of the announced broadcast (null-terminated string)
+    pub path: *const c_char,
+    /// Whether the broadcast is active (true) or ended (false)
+    pub active: bool,
+}
+
+/// Result codes for announce operations
+#[repr(C)]
+#[derive(Debug, PartialEq)]
+pub enum MoqAnnounceResult {
+    AnnounceSuccess = 0,
+    AnnounceNoData = 1,
+    AnnounceSessionClosed = 2,
+    AnnounceInvalidArgument = 3,
 }
 
 /// Generate a new unique ID
@@ -491,6 +525,242 @@ pub unsafe extern "C" fn moq_client_free(client: *mut MoqClient) {
         // Remove from storage
         let mut handles = HANDLES.lock().unwrap();
         handles.clients.remove(&client.id);
+    }
+}
+
+/// Get the origin consumer from a session for announcements
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_get_origin_consumer(
+    session: *mut MoqSession,
+    origin_consumer_out: *mut *mut MoqOriginConsumer,
+) -> MoqResult {
+    if session.is_null() || origin_consumer_out.is_null() {
+        return MoqResult::InvalidArgument;
+    }
+
+    let session = &*session;
+    let session_id = session.id;
+
+    // Get the origin consumer from the session
+    let origin_consumer_opt = {
+        let handles = HANDLES.lock().unwrap();
+        if let Some(session_data) = handles.sessions.get(&session_id) {
+            session_data.subscribe_origin.clone()
+        } else {
+            return MoqResult::InvalidArgument;
+        }
+    };
+
+    let origin_consumer = match origin_consumer_opt {
+        Some(consumer) => consumer,
+        None => return MoqResult::InvalidArgument,
+    };
+
+    let consumer_id = next_id();
+    let consumer_data = OriginConsumerData {
+        session_id,
+        consumer: origin_consumer,
+    };
+
+    // Store the consumer data
+    {
+        let mut handles = HANDLES.lock().unwrap();
+        handles.origin_consumers.insert(consumer_id, consumer_data);
+    }
+
+    // Create and return the consumer handle
+    let boxed_consumer = Box::new(MoqOriginConsumer { id: consumer_id });
+    *origin_consumer_out = Box::into_raw(boxed_consumer);
+
+    MoqResult::Success
+}
+
+/// Get the next announced broadcast from an origin consumer (blocking)
+/// 
+/// This function blocks until the next broadcast announcement is available.
+/// Returns MoqAnnounceResult::AnnounceSuccess if an announcement was received,
+/// MoqAnnounceResult::AnnounceNoData if the stream ended, or 
+/// MoqAnnounceResult::AnnounceSessionClosed if the session was closed.
+#[no_mangle]
+pub unsafe extern "C" fn moq_origin_consumer_announced(
+    origin_consumer: *mut MoqOriginConsumer,
+    announce_out: *mut MoqAnnounce,
+) -> MoqAnnounceResult {
+    if origin_consumer.is_null() || announce_out.is_null() {
+        return MoqAnnounceResult::AnnounceInvalidArgument;
+    }
+
+    let origin_consumer = &*origin_consumer;
+    let consumer_id = origin_consumer.id;
+
+    // Get the next announcement using proper async handling with timeout loop
+    let announcement_result = {
+        // Take ownership of the consumer temporarily
+        let (mut origin_consumer_temp, session_id) = {
+            let mut handles = HANDLES.lock().unwrap();
+            match handles.origin_consumers.remove(&consumer_id) {
+                Some(data) => {
+                    let session_id = data.session_id;
+                    (data.consumer, session_id)
+                }
+                None => return MoqAnnounceResult::AnnounceInvalidArgument,
+            }
+        }; // MutexGuard is dropped here
+
+        // Call announced() with timeout loop to check if session closes
+        let announcement_opt = loop {
+            // Check if session still exists before waiting
+            {
+                let handles = HANDLES.lock().unwrap();
+                if !handles.sessions.contains_key(&session_id) {
+                    // Session was closed while we were waiting
+                    break None;
+                }
+            }
+
+            // Try to get next announcement with a short timeout
+            match RUNTIME.block_on(async {
+                tokio::time::timeout(
+                    tokio::time::Duration::from_millis(500),
+                    origin_consumer_temp.announced(),
+                )
+                .await
+            }) {
+                Ok(Some((path, broadcast_opt))) => {
+                    break Some((path, broadcast_opt));
+                }
+                Ok(None) => break None, // Stream ended
+                Err(_) => {
+                    // Timeout - loop back to check session status
+                    continue;
+                }
+            }
+        };
+
+        // Put the consumer back into storage
+        {
+            let mut handles = HANDLES.lock().unwrap();
+            let consumer_data = OriginConsumerData {
+                session_id,
+                consumer: origin_consumer_temp,
+            };
+            handles.origin_consumers.insert(consumer_id, consumer_data);
+        }
+
+        announcement_opt
+    };
+
+    match announcement_result {
+        Some((path, broadcast_opt)) => {
+            // Convert path to C string
+            let path_str = path.to_string();
+            let path_cstr = std::ffi::CString::new(path_str).expect("path contains null byte");
+            let path_ptr = path_cstr.into_raw();
+
+            // Track the path string allocation
+            {
+                let mut tracker = MEMORY_TRACKER.lock().unwrap();
+                tracker.insert(path_ptr as usize, path.to_string().len() + 1);
+            }
+
+            *announce_out = MoqAnnounce {
+                path: path_ptr,
+                active: broadcast_opt.is_some(),
+            };
+
+            MoqAnnounceResult::AnnounceSuccess
+        }
+        None => {
+            // Stream ended or session closed
+            MoqAnnounceResult::AnnounceNoData
+        }
+    }
+}
+
+/// Get the next announced broadcast from an origin consumer (non-blocking)
+/// 
+/// This function returns immediately without blocking.
+/// Returns MoqAnnounceResult::AnnounceSuccess if an announcement was available,
+/// MoqAnnounceResult::AnnounceNoData if no announcement is available, or 
+/// MoqAnnounceResult::AnnounceSessionClosed if the session was closed.
+#[no_mangle]
+pub unsafe extern "C" fn moq_origin_consumer_try_announced(
+    origin_consumer: *mut MoqOriginConsumer,
+    announce_out: *mut MoqAnnounce,
+) -> MoqAnnounceResult {
+    if origin_consumer.is_null() || announce_out.is_null() {
+        return MoqAnnounceResult::AnnounceInvalidArgument;
+    }
+
+    let origin_consumer = &*origin_consumer;
+    let consumer_id = origin_consumer.id;
+
+    // Get the next announcement using non-blocking call
+    let announcement_result = {
+        let mut handles = HANDLES.lock().unwrap();
+        match handles.origin_consumers.get_mut(&consumer_id) {
+            Some(consumer_data) => {
+                consumer_data.consumer.try_announced()
+            }
+            None => return MoqAnnounceResult::AnnounceInvalidArgument,
+        }
+    };
+
+    match announcement_result {
+        Some((path, broadcast_opt)) => {
+            // Convert path to C string
+            let path_str = path.to_string();
+            let path_cstr = std::ffi::CString::new(path_str).expect("path contains null byte");
+            let path_ptr = path_cstr.into_raw();
+
+            // Track the path string allocation
+            {
+                let mut tracker = MEMORY_TRACKER.lock().unwrap();
+                tracker.insert(path_ptr as usize, path.to_string().len() + 1);
+            }
+
+            *announce_out = MoqAnnounce {
+                path: path_ptr,
+                active: broadcast_opt.is_some(),
+            };
+
+            MoqAnnounceResult::AnnounceSuccess
+        }
+        None => {
+            // No announcement available
+            MoqAnnounceResult::AnnounceNoData
+        }
+    }
+}
+
+/// Free an origin consumer handle
+#[no_mangle]
+pub unsafe extern "C" fn moq_origin_consumer_free(origin_consumer: *mut MoqOriginConsumer) {
+    if !origin_consumer.is_null() {
+        let origin_consumer = Box::from_raw(origin_consumer);
+        let mut handles = HANDLES.lock().unwrap();
+        handles.origin_consumers.remove(&origin_consumer.id);
+    }
+}
+
+/// Free an announced broadcast structure
+/// This frees the path string allocated by moq_session_announced or moq_session_try_announced
+#[no_mangle]
+pub unsafe extern "C" fn moq_announce_free(announce: *mut MoqAnnounce) {
+    if !announce.is_null() {
+        let announce = &*announce;
+        
+        // Free the path string
+        if !announce.path.is_null() {
+            let mut tracker = MEMORY_TRACKER.lock().unwrap();
+            if let Some(size) = tracker.remove(&(announce.path as usize)) {
+                let layout = std::alloc::Layout::from_size_align(size, 1).unwrap();
+                std::alloc::dealloc(announce.path as *mut u8, layout);
+            }
+        }
+        
+        // Note: The consumer handle should be freed separately using moq_broadcast_consumer_free
+        // if it's not null, as it may be used by the caller
     }
 }
 
@@ -1330,6 +1600,8 @@ pub unsafe extern "C" fn moq_spawn_task(
     MoqResult::Success
 }
 
+
+
 /// Function to ensure all FFI functions are kept in the binary
 /// This prevents dead code elimination of exported functions
 #[no_mangle]
@@ -1363,5 +1635,10 @@ pub extern "C" fn _moq_ffi_keep_symbols() {
         moq_group_consumer_free as *const (),
         moq_get_last_error as *const (),
         moq_result_to_string as *const (),
+        moq_session_get_origin_consumer as *const (),
+        moq_origin_consumer_announced as *const (),
+        moq_origin_consumer_try_announced as *const (),
+        moq_origin_consumer_free as *const (),
+        moq_announce_free as *const (),
     ];
 }

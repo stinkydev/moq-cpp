@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -13,12 +14,13 @@
 #include "moq-mgr/consumer.h"
 #include "moq-mgr/producer.h"
 
-#include <moq/client.h>
+#include <moq/moq.h>
 
 // Forward declarations
 namespace moq {
 class Client;
 class Session;
+class OriginConsumer;
 }  // namespace moq
 
 namespace moq_mgr {
@@ -91,6 +93,13 @@ class ConsumerSession : public Session {
  private:
   std::vector<Consumer::SubscriptionConfig> subscriptions_;
   std::vector<std::unique_ptr<Consumer>> consumers_;
+  
+  // Announcement management
+  std::unique_ptr<moq::OriginConsumer> origin_consumer_;
+  std::thread announcement_thread_;
+  std::map<std::string, std::unique_ptr<Consumer>> announced_consumers_;  // path -> consumer
+  
+  void announcement_loop();
 
  protected: 
   void start_all_workers() override;
@@ -98,4 +107,4 @@ class ConsumerSession : public Session {
   void cleanup_connections() override;
 };
 
-}  // namespace moq_cro_bridge
+}  // namespace moq_mgr
