@@ -576,10 +576,10 @@ pub unsafe extern "C" fn moq_session_get_origin_consumer(
 }
 
 /// Get the next announced broadcast from an origin consumer (blocking)
-/// 
+///
 /// This function blocks until the next broadcast announcement is available.
 /// Returns MoqAnnounceResult::AnnounceSuccess if an announcement was received,
-/// MoqAnnounceResult::AnnounceNoData if the stream ended, or 
+/// MoqAnnounceResult::AnnounceNoData if the stream ended, or
 /// MoqAnnounceResult::AnnounceSessionClosed if the session was closed.
 #[no_mangle]
 pub unsafe extern "C" fn moq_origin_consumer_announced(
@@ -678,10 +678,10 @@ pub unsafe extern "C" fn moq_origin_consumer_announced(
 }
 
 /// Get the next announced broadcast from an origin consumer (non-blocking)
-/// 
+///
 /// This function returns immediately without blocking.
 /// Returns MoqAnnounceResult::AnnounceSuccess if an announcement was available,
-/// MoqAnnounceResult::AnnounceNoData if no announcement is available, or 
+/// MoqAnnounceResult::AnnounceNoData if no announcement is available, or
 /// MoqAnnounceResult::AnnounceSessionClosed if the session was closed.
 #[no_mangle]
 pub unsafe extern "C" fn moq_origin_consumer_try_announced(
@@ -699,9 +699,7 @@ pub unsafe extern "C" fn moq_origin_consumer_try_announced(
     let announcement_result = {
         let mut handles = HANDLES.lock().unwrap();
         match handles.origin_consumers.get_mut(&consumer_id) {
-            Some(consumer_data) => {
-                consumer_data.consumer.try_announced()
-            }
+            Some(consumer_data) => consumer_data.consumer.try_announced(),
             None => return MoqAnnounceResult::AnnounceInvalidArgument,
         }
     };
@@ -749,7 +747,7 @@ pub unsafe extern "C" fn moq_origin_consumer_free(origin_consumer: *mut MoqOrigi
 pub unsafe extern "C" fn moq_announce_free(announce: *mut MoqAnnounce) {
     if !announce.is_null() {
         let announce = &*announce;
-        
+
         // Free the path string
         if !announce.path.is_null() {
             let mut tracker = MEMORY_TRACKER.lock().unwrap();
@@ -758,7 +756,7 @@ pub unsafe extern "C" fn moq_announce_free(announce: *mut MoqAnnounce) {
                 std::alloc::dealloc(announce.path as *mut u8, layout);
             }
         }
-        
+
         // Note: The consumer handle should be freed separately using moq_broadcast_consumer_free
         // if it's not null, as it may be used by the caller
     }
@@ -1599,8 +1597,6 @@ pub unsafe extern "C" fn moq_spawn_task(
 
     MoqResult::Success
 }
-
-
 
 /// Function to ensure all FFI functions are kept in the binary
 /// This prevents dead code elimination of exported functions
