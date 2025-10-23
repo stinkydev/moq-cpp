@@ -3,6 +3,7 @@ target/
 Cargo.lock
 build/
 *.log
+tmp
 
 # CMake and C++ artifacts
 *.o

@@ -58,6 +58,10 @@ class Consumer {
    */
   bool is_running() const;
 
+  const std::string& get_track_name() const {
+    return subscription_.moq_track_name;
+  }
+
  private:
   SubscriptionConfig subscription_;
 

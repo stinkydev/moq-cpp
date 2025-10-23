@@ -90,22 +90,20 @@ void Consumer::consumer_loop() {
         try {
           // Get the next group from the track (blocking call)
           auto group_future = moq_track_consumer_->nextGroup();
-          auto group_consumer = group_future.get();  // Block until next group arrives
+          auto group_consumer = group_future.get();
           
           if (!group_consumer) {
-            // No more groups (stream ended or closed)
+            // Stream has ended
             subscription_established = false;
             subscribed_.store(false);
             moq_track_consumer_.reset();
-            moq_consumer_.reset();
-            last_retry_time = std::chrono::steady_clock::now();
-            continue;
+            return;
           }
           
           // Read all frames from this group
           while (running_.load()) {
             auto frame_future = group_consumer->readFrame();
-            auto frame_status = frame_future.wait_for(std::chrono::milliseconds(100));
+            auto frame_status = frame_future.wait_for(std::chrono::milliseconds(1000));
             
             if (frame_status == std::future_status::ready) {
               auto frame_data = frame_future.get();
@@ -125,28 +123,15 @@ void Consumer::consumer_loop() {
           // After finishing this group, loop will continue to get next group
           
         } catch (const std::exception& e) {
-          subscription_established = false;
-          subscribed_.store(false);
-          moq_track_consumer_.reset();
-          moq_consumer_.reset();
-          last_retry_time = std::chrono::steady_clock::now();
-          
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          // silent
         }
       }
       
     } catch (const std::exception& e) {
       // On error, reset subscription and retry
       subscription_established = false;
-      subscribed_.store(false);
-      moq_track_consumer_.reset();
-      moq_consumer_.reset();
-      last_retry_time = std::chrono::steady_clock::now();
-      
+      subscribed_.store(false);      
       if (!running_.load()) break;
-      
-      // Brief pause before retrying
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
 }

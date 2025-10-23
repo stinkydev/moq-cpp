@@ -4,6 +4,14 @@ project(moq-c-api VERSION 0.1.3 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Fetch nlohmann/json for JSON parsing
+include(FetchContent)
+FetchContent_Declare(
+    json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+FetchContent_MakeAvailable(json)
+
 # Find Rust and Cargo
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
@@ -100,7 +108,7 @@ target_include_directories(moq_mgr PUBLIC
 )
 
 add_dependencies(moq_mgr moq_cpp)
-target_link_libraries(moq_mgr PUBLIC moq_cpp)
+target_link_libraries(moq_mgr PUBLIC moq_cpp nlohmann_json::nlohmann_json)
 
 # Example executables
 # Note: Old examples are temporarily disabled due to API changes

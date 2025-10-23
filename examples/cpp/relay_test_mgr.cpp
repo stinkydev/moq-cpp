@@ -139,7 +139,7 @@ public:
             return false;
         }
 
-        std::cout << "Successfully connected to MOQ server and started consuming!" << std::endl;
+        std::cout << "Successfully connected to MOQ server" << std::endl;
         is_connected_ = true;
         return true;
     }

@@ -84,22 +84,35 @@ class ProducerSession : public Session {
   void handle_disconnected() override;
 };
 
+struct AvailableTrack {
+  std::string track_name;
+  std::string type;
+  int priority;
+};
+
 class ConsumerSession : public Session {
  public:
-  explicit ConsumerSession(const SessionConfig& config, std::vector<Consumer::SubscriptionConfig> subscriptions) : Session(config, moq::SessionMode::SubscribeOnly), subscriptions_(std::move(subscriptions)) {}
+  explicit ConsumerSession(const SessionConfig& config, std::vector<Consumer::SubscriptionConfig> subscriptions)
+  : Session(config, moq::SessionMode::SubscribeOnly) {
+    for (const auto& sub : subscriptions) {
+      requested_subscriptions_[sub.moq_track_name] = sub;
+    }
+  }
 
  private:
-  std::vector<Consumer::SubscriptionConfig> subscriptions_;
+  std::unordered_map<std::string, Consumer::SubscriptionConfig> requested_subscriptions_;
+  std::unordered_map<std::string, AvailableTrack> available_tracks_;
   std::vector<std::unique_ptr<Consumer>> consumers_;
   std::unique_ptr<Consumer> catalog_consumer;
   std::shared_ptr<moq::BroadcastConsumer> moq_consumer_;
 
   std::thread announcement_thread_;
-  std::map<std::string, std::unique_ptr<Consumer>> announced_consumers_;  // path -> consumer
   
   void announcement_loop();
   void start_catalog_consumer();
   void stop_catalog_consumer();
+  void process_catalog_data(const uint8_t* data, size_t size);
+  void check_subscriptions();
 
  protected: 
   void handle_connected() override;
