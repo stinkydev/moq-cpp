@@ -7,16 +7,13 @@
 
 namespace moq_mgr {
 
-Consumer::Consumer(size_t consumer_id, const std::string &broadcast_id,
-                   const SubscriptionConfig& subscription,
-                   std::shared_ptr<moq::Session> moq_session)
-    : consumer_id_(consumer_id)
-    , broadcast_id_(broadcast_id)
+Consumer::Consumer(std::shared_ptr<moq::BroadcastConsumer> moq_consumer,
+                   const SubscriptionConfig& subscription)
+    : moq_consumer_(moq_consumer)
     , subscription_(subscription)
-    , moq_session_(moq_session)
     , start_time_(std::chrono::system_clock::now()) {
-  if (!moq_session_) {
-    throw std::invalid_argument("MoQ session cannot be null");
+  if (!moq_consumer) {
+    throw std::invalid_argument("MoQ consumer cannot be null");
   }
 }
 
@@ -156,18 +153,8 @@ void Consumer::consumer_loop() {
 
 bool Consumer::establish_subscription() {
   try {
-    if (moq_track_consumer_) {
-      moq_consumer_.reset();
-    }
-    moq_consumer_ = moq_session_->consume(broadcast_id_);
-    if (!moq_consumer_) {
-      // Silently return false - producer may not be available yet
-      return false;
-    }
-
     moq_track_consumer_ = moq_consumer_->subscribeTrack(moq::Track{subscription_.moq_track_name});
     if (!moq_track_consumer_) {
-      // Silently return false - track may not be available yet
       moq_consumer_.reset();
       return false;
     }

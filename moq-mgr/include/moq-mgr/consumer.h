@@ -38,9 +38,8 @@ class Consumer {
   };
 
   explicit Consumer(
-      size_t consumer_id, const std::string& broadcast_id,
-      const SubscriptionConfig& subscription,
-      std::shared_ptr<moq::Session> moq_session);
+      std::shared_ptr<moq::BroadcastConsumer> moq_consumer,
+      const SubscriptionConfig& subscription);
   ~Consumer();
 
   /**
@@ -59,19 +58,10 @@ class Consumer {
    */
   bool is_running() const;
 
-  /**
-   * @brief Get consumer ID
-   * @return Consumer ID
-   */
-  size_t get_consumer_id() const { return consumer_id_; }
-
  private:
-  size_t consumer_id_;
-  std::string broadcast_id_;
   SubscriptionConfig subscription_;
-  std::shared_ptr<moq::Session> moq_session_;
 
-  std::unique_ptr<moq::BroadcastConsumer> moq_consumer_;
+  std::shared_ptr<moq::BroadcastConsumer> moq_consumer_;
   std::unique_ptr<moq::TrackConsumer> moq_track_consumer_;
 
   std::atomic<bool> running_{false};

@@ -88,6 +88,8 @@ add_library(moq_mgr STATIC
     moq-mgr/src/moq-mgr-session.cc
     moq-mgr/src/moq-mgr-producer.cc
     moq-mgr/src/moq-mgr-consumer.cc
+    moq-mgr/src/moq-mgr-producer-session.cc
+    moq-mgr/src/moq-mgr-consumer-session.cc
 )
 
 target_include_directories(moq_mgr PUBLIC

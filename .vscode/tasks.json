@@ -2,6 +2,19 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "Build MSVC Debug",
+			"type": "shell",
+			"command": "cmake --build build --config Debug",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			]
+		},
+		{
 			"label": "Build and Run MOQ Example",
 			"type": "shell",
 			"command": "cd build && ninja && ./moq_example",

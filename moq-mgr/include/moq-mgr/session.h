@@ -67,9 +67,8 @@ class Session {
   void session_loop();
   bool reconnect();
 
-  virtual void stop_all_workers() = 0;
-  virtual void start_all_workers() = 0;
-  virtual void cleanup_connections() = 0;
+  virtual void handle_connected() = 0;
+  virtual void handle_disconnected() = 0;
 };
 
 class ProducerSession : public Session {
@@ -81,9 +80,8 @@ class ProducerSession : public Session {
   std::vector<std::unique_ptr<Producer>> producers_;
 
  protected:
-  void start_all_workers() override;
-  void stop_all_workers() override;
-  void cleanup_connections() override;
+  void handle_connected() override;
+  void handle_disconnected() override;
 };
 
 class ConsumerSession : public Session {
@@ -93,18 +91,19 @@ class ConsumerSession : public Session {
  private:
   std::vector<Consumer::SubscriptionConfig> subscriptions_;
   std::vector<std::unique_ptr<Consumer>> consumers_;
-  
-  // Announcement management
-  std::unique_ptr<moq::OriginConsumer> origin_consumer_;
+  std::unique_ptr<Consumer> catalog_consumer;
+  std::shared_ptr<moq::BroadcastConsumer> moq_consumer_;
+
   std::thread announcement_thread_;
   std::map<std::string, std::unique_ptr<Consumer>> announced_consumers_;  // path -> consumer
   
   void announcement_loop();
+  void start_catalog_consumer();
+  void stop_catalog_consumer();
 
  protected: 
-  void start_all_workers() override;
-  void stop_all_workers() override;
-  void cleanup_connections() override;
+  void handle_connected() override;
+  void handle_disconnected() override;
 };
 
 }  // namespace moq_mgr
