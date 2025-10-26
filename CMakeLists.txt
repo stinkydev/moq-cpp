@@ -93,15 +93,15 @@ add_dependencies(moq_cpp rust_lib)
 target_link_libraries(moq_cpp PUBLIC moq_ffi)
 
 add_library(moq_mgr STATIC
-    moq-mgr/src/moq-mgr-session.cc
-    moq-mgr/src/moq-mgr-producer.cc
-    moq-mgr/src/moq-mgr-consumer.cc
-    moq-mgr/src/moq-mgr-producer-session.cc
-    moq-mgr/src/moq-mgr-consumer-session.cc
+    moq-mgr-cpp/src/moq-mgr-session.cc
+    moq-mgr-cpp/src/moq-mgr-producer.cc
+    moq-mgr-cpp/src/moq-mgr-consumer.cc
+    moq-mgr-cpp/src/moq-mgr-producer-session.cc
+    moq-mgr-cpp/src/moq-mgr-consumer-session.cc
 )
 
 target_include_directories(moq_mgr PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr-cpp/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi/include>
     $<INSTALL_INTERFACE:include>
@@ -174,7 +174,7 @@ install(DIRECTORY moq-cpp/include/
 )
 
 # Install MOQ Manager headers
-install(DIRECTORY moq-mgr/include/
+install(DIRECTORY moq-mgr-cpp/include/
     DESTINATION include
     FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
 )
