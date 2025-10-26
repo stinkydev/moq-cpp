@@ -16,7 +16,7 @@ use moq_lite::*;
 #[derive(Parser, Clone)]
 pub struct Config {
     /// Connect to the given URL starting with https://
-    #[arg(long, default_value = "https://relay2.moq.sesame-streams.com:4433")]
+    #[arg(long, default_value = "https://relay1.moq.sesame-streams.com:4433")]
     pub url: Url,
 
     /// The name of the broadcast to subscribe to.
@@ -555,22 +555,22 @@ impl RelayTestApp {
                                     println!("Auto-reconnect: {}", if self.auto_reconnect { "ON" } else { "OFF" });
                                 }
                                 KeyCode::Char('v') => {
-                                    if let Err(e) = self.subscribe_to_track("video").await {
+                                    if let Err(e) = self.subscribe_to_track("video/hd").await {
                                         tracing::error!("Failed to subscribe to video: {:?}", e);
                                     }
                                 }
                                 KeyCode::Char('a') => {
-                                    if let Err(e) = self.subscribe_to_track("audio").await {
+                                    if let Err(e) = self.subscribe_to_track("audio/data").await {
                                         tracing::error!("Failed to subscribe to audio: {:?}", e);
                                     }
                                 }
                                 KeyCode::Char('V') => {
-                                    if let Err(e) = self.unsubscribe_from_track("video").await {
+                                    if let Err(e) = self.unsubscribe_from_track("video/hd").await {
                                         tracing::error!("Failed to unsubscribe from video: {:?}", e);
                                     }
                                 }
                                 KeyCode::Char('A') => {
-                                    if let Err(e) = self.unsubscribe_from_track("audio").await {
+                                    if let Err(e) = self.unsubscribe_from_track("audio/data").await {
                                         tracing::error!("Failed to unsubscribe from audio: {:?}", e);
                                     }
                                 }

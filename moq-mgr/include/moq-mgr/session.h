@@ -15,6 +15,7 @@
 #include "moq-mgr/producer.h"
 
 #include <moq/moq.h>
+#include <nlohmann/json.hpp>
 
 // Forward declarations
 namespace moq {
@@ -112,6 +113,7 @@ class ConsumerSession : public Session {
   void start_catalog_consumer();
   void stop_catalog_consumer();
   void process_catalog_data(const uint8_t* data, size_t size);
+  void process_hang_catalog(nlohmann::json& catalog_json);
   void check_subscriptions();
 
  protected: 

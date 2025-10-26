@@ -93,14 +93,16 @@ void Consumer::consumer_loop() {
           auto group_consumer = group_future.get();
           
           if (!group_consumer) {
-            // Stream has ended
+            // No group available - stream might have ended or subscription needs retry
+            // Reset subscription and try again instead of returning
             subscription_established = false;
             subscribed_.store(false);
             moq_track_consumer_.reset();
-            return;
+            continue;  // Go back to retry loop instead of returning
           }
           
           // Read all frames from this group
+          bool got_any_frame = false;
           while (running_.load()) {
             auto frame_future = group_consumer->readFrame();
             auto frame_status = frame_future.wait_for(std::chrono::milliseconds(1000));
@@ -109,10 +111,12 @@ void Consumer::consumer_loop() {
               auto frame_data = frame_future.get();
               
               if (!frame_data.has_value()) {
+                // No more frames in this group
                 break;
               }
               
               // Handle the received frame data
+              got_any_frame = true;
               handle_moq_data(frame_data.value());
             } else {
               // Timeout waiting for frame, check if we should continue
@@ -120,13 +124,13 @@ void Consumer::consumer_loop() {
             }
           }
           
-          // After finishing this group, loop will continue to get next group
+          // Continue to next group (don't return just because this group was empty)
           
         } catch (const std::exception& e) {
           // silent
         }
       }
-      
+
     } catch (const std::exception& e) {
       // On error, reset subscription and retry
       subscription_established = false;

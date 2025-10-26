@@ -1,5 +1,6 @@
 #include <moq-mgr/session.h>
 #include <moq-mgr/consumer.h>
+#include "proto/sesame_binary_protocol.h"
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -9,6 +10,7 @@
 #include <iomanip>
 #include <sstream>
 #include <map>
+#include <cstring>
 #include <conio.h>  // For _kbhit() and _getch() on Windows
 
 class TrackDataHandler {
@@ -16,19 +18,148 @@ private:
     std::string track_name_;
     std::atomic<uint64_t> bytes_received_;
     std::atomic<uint64_t> groups_received_;
+    std::atomic<uint64_t> keyframes_received_;
     std::chrono::system_clock::time_point start_time_;
+    bool parse_protocol_;
 
 public:
-    explicit TrackDataHandler(const std::string& track_name) 
+    explicit TrackDataHandler(const std::string& track_name, bool parse_protocol = false) 
         : track_name_(track_name), bytes_received_(0), groups_received_(0),
-          start_time_(std::chrono::system_clock::now()) {}
+          keyframes_received_(0), start_time_(std::chrono::system_clock::now()),
+          parse_protocol_(parse_protocol) {}
 
     void handleData(uint8_t* data, size_t size) {
         bytes_received_ += size;
         groups_received_++;
 
-        std::cout << "Track " << track_name_ << ": Received frame of size " 
-                  << size << " bytes" << std::endl;
+        bool is_keyframe = false;
+        std::string packet_info;
+        
+        if (parse_protocol_) {
+            // Parse packet using Sesame Binary Protocol
+            auto parsed = Sesame::Protocol::BinaryProtocol::parse_data(data, size);
+        
+            if (parsed.valid) {
+                is_keyframe = (parsed.header->flags & Sesame::Protocol::FLAG_IS_KEYFRAME) != 0;
+            
+                if (is_keyframe) {
+                    keyframes_received_++;
+                }
+            
+                // Build detailed packet info
+                std::stringstream ss;
+                ss << " [";
+            
+                // Packet type
+                switch (parsed.header->type) {
+                    case Sesame::Protocol::PACKET_TYPE::VIDEO_FRAME:
+                        ss << "VIDEO";
+                        break;
+                    case Sesame::Protocol::PACKET_TYPE::AUDIO_FRAME:
+                        ss << "AUDIO";
+                        break;
+                    case Sesame::Protocol::PACKET_TYPE::RPC:
+                        ss << "RPC";
+                        break;
+                    case Sesame::Protocol::PACKET_TYPE::MUXED_DATA:
+                        ss << "MUXED";
+                        break;
+                    case Sesame::Protocol::PACKET_TYPE::DECODER_DATA:
+                        ss << "DECODER";
+                        break;
+                    default:
+                        ss << "UNKNOWN";
+                        break;
+                }
+            
+                // Keyframe status
+                ss << (is_keyframe ? ", key" : "");
+            
+                // PTS
+                ss << ", PTS:" << parsed.header->pts;
+            
+                // Codec info if available
+                if (parsed.codec_data) {
+                    ss << ", ";
+                    switch (parsed.codec_data->codec_type) {
+                        case Sesame::Protocol::CODEC_TYPE::VIDEO_VP8:
+                            ss << "VP8";
+                            break;
+                        case Sesame::Protocol::CODEC_TYPE::VIDEO_VP9:
+                            ss << "VP9";
+                            break;
+                        case Sesame::Protocol::CODEC_TYPE::VIDEO_AVC:
+                            ss << "AVC";
+                            break;
+                        case Sesame::Protocol::CODEC_TYPE::VIDEO_HEVC:
+                            ss << "HEVC";
+                            break;
+                        case Sesame::Protocol::CODEC_TYPE::VIDEO_AV1:
+                            ss << "AV1";
+                            break;
+                        case Sesame::Protocol::CODEC_TYPE::AUDIO_OPUS:
+                            ss << "OPUS";
+                            break;
+                        case Sesame::Protocol::CODEC_TYPE::AUDIO_AAC:
+                            ss << "AAC";
+                            break;
+                        case Sesame::Protocol::CODEC_TYPE::AUDIO_PCM:
+                            ss << "PCM";
+                            break;
+                        default:
+                            ss << "UNKNOWN_CODEC";
+                            break;
+                    }
+                
+                    // Add resolution for video
+                    if (parsed.header->type == Sesame::Protocol::PACKET_TYPE::VIDEO_FRAME) {
+                        ss << " " << parsed.codec_data->width << "x" << parsed.codec_data->height;
+                    }
+                
+                    // Add sample rate for audio
+                    if (parsed.header->type == Sesame::Protocol::PACKET_TYPE::AUDIO_FRAME) {
+                        ss << " " << parsed.codec_data->sample_rate << " hz";
+                    }
+                }
+            
+                // Payload info with first and last bytes
+                ss << ", payload:" << parsed.payload_size;
+                if (parsed.payload_size > 0) {
+                    const uint8_t* payload_bytes = static_cast<const uint8_t*>(parsed.payload);
+                    ss << " [0x" << std::hex << std::setfill('0') << std::setw(2) 
+                       << static_cast<int>(payload_bytes[0]);
+                    if (parsed.payload_size > 1) {
+                        ss << "...0x" << std::setw(2) 
+                           << static_cast<int>(payload_bytes[parsed.payload_size - 1]);
+                    }
+                    ss << std::dec << "]";
+                }
+            
+                ss << "]";
+                packet_info = ss.str();
+            } else {
+                packet_info = " [INVALID PACKET]";
+            }
+        } else {
+            // Simple raw data logging when protocol parsing is disabled
+            std::stringstream ss;
+            ss << " [RAW DATA";
+            if (size > 0) {
+                ss << ", first:0x" << std::hex << std::setfill('0') << std::setw(2)
+                   << static_cast<int>(data[0]);
+                if (size > 1) {
+                    ss << ", last:0x" << std::setw(2) 
+                       << static_cast<int>(data[size - 1]);
+                }
+                ss << std::dec;
+            }
+            ss << "]";
+            packet_info = ss.str();
+        }
+        
+        // Log packet information
+        std::cout << "Track " << track_name_ << ": Size " 
+                  << size << " bytes" << packet_info << std::endl;
         
         // Log every 100 groups or 1MB of data
         if (groups_received_ % 100 == 0 || bytes_received_ % (1024*1024) == 0) {
@@ -36,7 +167,8 @@ public:
             auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - start_time_).count();
             
             std::cout << "Track " << track_name_ << ": " << groups_received_ 
-                      << " groups, " << bytes_received_ << " bytes"
+                      << " groups, " << keyframes_received_ << " keyframes, "
+                      << bytes_received_ << " bytes"
                       << " (avg " << (bytes_received_ / std::max(duration, static_cast<decltype(duration)>(1))) << " B/s)" << std::endl;
         }
     }
@@ -47,6 +179,10 @@ public:
 
     uint64_t getGroupsReceived() const {
         return groups_received_;
+    }
+    
+    uint64_t getKeyframesReceived() const {
+        return keyframes_received_;
     }
 
     const std::string& getTrackName() const {
@@ -60,6 +196,7 @@ private:
     std::string broadcast_name_;
     std::vector<std::string> available_track_names_;
     std::atomic<bool> running_;
+    bool parse_protocol_;
     
     // MOQ MGR objects
     std::unique_ptr<moq_mgr::ConsumerSession> consumer_session_;
@@ -68,9 +205,9 @@ private:
 
 public:
     RelayTestMgrApp(const std::string& url, const std::string& broadcast_name, 
-                   const std::vector<std::string>& track_names)
+                   const std::vector<std::string>& track_names, bool parse_protocol = false)
         : url_(url), broadcast_name_(broadcast_name), available_track_names_(track_names), 
-          running_(true), is_connected_(false) {}
+          running_(true), parse_protocol_(parse_protocol), is_connected_(false) {}
 
     ~RelayTestMgrApp() {
         stop();
@@ -106,8 +243,8 @@ public:
         std::vector<moq_mgr::Consumer::SubscriptionConfig> subscriptions;
         
         for (const auto& track_name : available_track_names_) {
-            // Create track data handler
-            auto handler = std::make_shared<TrackDataHandler>(track_name);
+            // Create track data handler with protocol parsing option
+            auto handler = std::make_shared<TrackDataHandler>(track_name, parse_protocol_);
             track_handlers_[track_name] = handler;
             
             // Create subscription config
@@ -177,6 +314,7 @@ public:
         for (const auto& pair : track_handlers_) {
             std::cout << "  - " << pair.first << ": " 
                       << pair.second->getGroupsReceived() << " groups, "
+                      << pair.second->getKeyframesReceived() << " keyframes, "
                       << pair.second->getBytesReceived() << " bytes" << std::endl;
         }
         std::cout << "=============\n" << std::endl;
@@ -262,11 +400,14 @@ void printUsage(const char* program_name) {
               << "  --url <url>          MOQ relay URL (default: https://relay1.moq.sesame-streams.com:4433)\n"
               << "  --broadcast <name>   Broadcast name to subscribe to (default: peter)\n"
               << "  --tracks <track1,track2,...>  Comma-separated list of tracks (default: video,audio)\n"
+              << "  --parse-protocol     Enable Sesame Binary Protocol parsing (default: off)\n"
               << "  --help               Show this help message\n\n"
               << "Example:\n"
-              << "  " << program_name << " --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio\n\n"
+              << "  " << program_name << " --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio\n"
+              << "  " << program_name << " --broadcast peter --parse-protocol\n\n"
               << "This example uses the MOQ Manager abstraction which automatically handles session management,\n"
               << "reconnection, and subscription lifecycle. All configured tracks are subscribed when connecting.\n"
+              << "Use --parse-protocol to enable detailed parsing of Sesame Binary Protocol packets.\n"
               << std::endl;
 }
 
@@ -292,6 +433,7 @@ int main(int argc, char* argv[]) {
     std::string url = "https://relay1.moq.sesame-streams.com:4433";
     std::string broadcast_name = "peter";
     std::vector<std::string> track_names = {"video", "audio"};
+    bool parse_protocol = false;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -304,6 +446,8 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--tracks" && i + 1 < argc) {
             std::string tracks_str = argv[++i];
             track_names = splitTracks(tracks_str);
+        } else if (arg == "--parse-protocol") {
+            parse_protocol = true;
         } else if (arg == "--help") {
             printUsage(argv[0]);
             return 0;
@@ -339,10 +483,12 @@ int main(int argc, char* argv[]) {
         if (i > 0) std::cout << ", ";
         std::cout << track_names[i];
     }
-    std::cout << std::endl << std::endl;
+    std::cout << std::endl;
+    std::cout << "Protocol Parsing: " << (parse_protocol ? "ENABLED" : "DISABLED") << std::endl;
+    std::cout << std::endl;
 
     // Create and run the test app
-    RelayTestMgrApp app(url, broadcast_name, track_names);
+    RelayTestMgrApp app(url, broadcast_name, track_names, parse_protocol);
     
     if (!app.initialize()) {
         std::cerr << "Failed to initialize application" << std::endl;

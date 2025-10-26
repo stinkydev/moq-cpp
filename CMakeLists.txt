@@ -127,8 +127,16 @@ if(WIN32)
     target_link_libraries(moq_relay_test moq_cpp)
     
     # Relay test using MOQ Manager abstraction
-    add_executable(moq_relay_test_mgr examples/cpp/relay_test_mgr.cpp)
+    add_executable(moq_relay_test_mgr 
+        examples/cpp/relay_test_mgr.cpp
+        examples/cpp/proto/sesame_binary_protocol.cc
+    )
     target_link_libraries(moq_relay_test_mgr moq_mgr)
+    target_include_directories(moq_relay_test_mgr PRIVATE examples/cpp)
+    
+    # Catalog test
+    add_executable(moq_catalog_test examples/cpp/catalog_test.cpp)
+    target_link_libraries(moq_catalog_test moq_cpp)
 endif()
 
 # Test executable for CI

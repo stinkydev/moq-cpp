@@ -1,5 +1,4 @@
 #include "../include/moq-mgr/session.h"
-#include <nlohmann/json.hpp>
 #include <unordered_set>
 
 using json = nlohmann::json;
@@ -28,18 +27,22 @@ void ConsumerSession::announcement_loop() {
       auto announce = origin_consumer->announced();
 
       if (announce) {
+        notify_status("Received announcement: path='" + announce->path + 
+                      "', active=" + (announce->active ? "true" : "false"));
         const std::string& path = announce->path;
         
+        if (path != config_.moq_namespace) {
+          continue;  // Ignore announcements not matching our namespace
+        }
+
         if (announce->active) {
           notify_status("Started consumer for announced broadcast: " + path);
-          if (path == config_.moq_namespace) {
-            moq_consumer_ = std::move(moq_session_->consume(config_.moq_namespace));
-            if (!moq_consumer_) {
-              notify_error("Failed to create BroadcastConsumer for namespace: " + config_.moq_namespace);
-              continue;
-            }
-            start_catalog_consumer();
+          moq_consumer_ = std::move(moq_session_->consume(config_.moq_namespace));
+          if (!moq_consumer_) {
+            notify_error("Failed to create BroadcastConsumer for namespace: " + config_.moq_namespace);
+            continue;
           }
+          start_catalog_consumer();
         } else {
           notify_status("Stopped consumer for announced broadcast: " + path);
           if (path == config_.moq_namespace) {
@@ -63,7 +66,7 @@ void ConsumerSession::announcement_loop() {
 
 void ConsumerSession::start_catalog_consumer() {
   Consumer::SubscriptionConfig catalog_subscription = {};
-  catalog_subscription.moq_track_name = "catalog";
+  catalog_subscription.moq_track_name = "catalog.json";
   catalog_subscription.data_callback = [this](uint8_t* data, size_t size) {
     process_catalog_data(data, size);
   };
@@ -79,6 +82,33 @@ void ConsumerSession::stop_catalog_consumer() {
   notify_status("Catalog consumer stopped");
 }
 
+void ConsumerSession::process_hang_catalog(nlohmann::json& catalog_json) {
+  /*
+   {"audio":{"priority":80,"renditions":{"audio/data":{"bitrate":32000,"codec":"opus","numberOfChannels":1,"sampleRate":48000}}},"chat":{},"video":{"display":{"height":720,"width":1280},"flip":false,"priority":60,"renditions":{"video/hd":{"bitrate":1935361,"codec":"avc1.640028","codedHeight":720,"codedWidth":1280,"framerate":30.000030517578125,"optimizeForLatency":true}}}}  
+  */
+  try {
+    // log all json
+    notify_status("Processing HANG catalog: " + catalog_json.dump());
+    available_tracks_.clear();
+
+    if (catalog_json.contains("video")) {
+      auto track_name = catalog_json["video"].contains("renditions") ? catalog_json["video"]["renditions"].begin().key() : "video";
+      notify_status("Detected video track: " + track_name);
+      available_tracks_[track_name] = AvailableTrack{track_name, "video", 1};
+    }
+    if (catalog_json.contains("audio")) {
+      auto track_name = catalog_json["audio"].contains("renditions") ? catalog_json["audio"]["renditions"].begin().key() : "audio";
+      notify_status("Detected audio track: " + track_name);
+      available_tracks_[track_name] = AvailableTrack{track_name, "audio", 1};
+    }
+    check_subscriptions();
+  } catch (const json::exception& e) {
+    notify_error("Error processing hang catalog: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    notify_error("Unexpected error processing hang catalog: " + std::string(e.what()));
+  }
+}
+
 void ConsumerSession::process_catalog_data(const uint8_t* data, size_t size) {
   try {
     // Convert raw data to string
@@ -90,6 +120,7 @@ void ConsumerSession::process_catalog_data(const uint8_t* data, size_t size) {
     // Check if tracks array exists
     if (!catalog_json.contains("tracks") || !catalog_json["tracks"].is_array()) {
       notify_error("Catalog data missing 'tracks' array");
+      process_hang_catalog(catalog_json);
       return;
     }
     
@@ -111,7 +142,7 @@ void ConsumerSession::process_catalog_data(const uint8_t* data, size_t size) {
                      " (type: " + track_type + 
                      ", priority: " + std::to_string(track_priority) + ")");
 
-                     check_subscriptions();
+        check_subscriptions();
       } else {
         notify_status("  - Skipping track with missing trackName, type, or priority");
       }
