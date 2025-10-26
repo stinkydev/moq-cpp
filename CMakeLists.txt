@@ -92,24 +92,6 @@ add_dependencies(moq_cpp rust_lib)
 
 target_link_libraries(moq_cpp PUBLIC moq_ffi)
 
-add_library(moq_mgr STATIC
-    moq-mgr-cpp/src/moq-mgr-session.cc
-    moq-mgr-cpp/src/moq-mgr-producer.cc
-    moq-mgr-cpp/src/moq-mgr-consumer.cc
-    moq-mgr-cpp/src/moq-mgr-producer-session.cc
-    moq-mgr-cpp/src/moq-mgr-consumer-session.cc
-)
-
-target_include_directories(moq_mgr PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr-cpp/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi/include>
-    $<INSTALL_INTERFACE:include>
-)
-
-add_dependencies(moq_mgr moq_cpp)
-target_link_libraries(moq_mgr PUBLIC moq_cpp nlohmann_json::nlohmann_json)
-
 # Example executables
 # Note: Old examples are temporarily disabled due to API changes
 # add_executable(moq_example examples/cpp/basic_example.cpp)
@@ -160,12 +142,6 @@ elseif(WIN32)
     )
 endif()
 
-# Installation
-install(TARGETS moq_cpp moq_mgr
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
-)
 
 # Install C++ wrapper headers
 install(DIRECTORY moq-cpp/include/
@@ -173,11 +149,6 @@ install(DIRECTORY moq-cpp/include/
     FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
 )
 
-# Install MOQ Manager headers
-install(DIRECTORY moq-mgr-cpp/include/
-    DESTINATION include
-    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
-)
 
 # Install FFI header
 install(FILES moq-ffi/include/moq_ffi.h
