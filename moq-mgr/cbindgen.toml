@@ -1,0 +1,9 @@
+language = "C"
+style = "both"
+cpp_compat = true
+
+[export]
+include = ["MoqMgr", "MoqSession", "MoqProducer", "MoqConsumer"]
+
+[export.rename]
+"MoqMgrResult" = "MoqMgrResult"

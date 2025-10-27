@@ -1,0 +1,26 @@
+[package]
+name = "moq-mgr"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+url.workspace = true
+moq-lite.workspace = true
+moq-native.workspace = true
+
+# For callbacks and thread-safe structures
+parking_lot = "0.12"
+futures = "0.3"
+rand = "0.8"
+tracing-subscriber = "0.3"
+
+[build-dependencies]
+cbindgen = "0.27"

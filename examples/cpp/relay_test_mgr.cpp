@@ -1,5 +1,4 @@
-#include <moq-mgr/session.h>
-#include <moq-mgr/consumer.h>
+#include "moq-mgr.h"
 #include "proto/sesame_binary_protocol.h"
 #include <iostream>
 #include <chrono>
@@ -194,35 +193,37 @@ class RelayTestMgrApp {
 private:
     std::string url_;
     std::string broadcast_name_;
+    std::string bind_addr_;
     std::vector<std::string> available_track_names_;
     std::atomic<bool> running_;
     bool parse_protocol_;
     
     // MOQ MGR objects
-    std::unique_ptr<moq_mgr::ConsumerSession> consumer_session_;
+    MoqMgrSession* session_;
     std::map<std::string, std::shared_ptr<TrackDataHandler>> track_handlers_;
     bool is_connected_;
 
 public:
     RelayTestMgrApp(const std::string& url, const std::string& broadcast_name, 
-                   const std::vector<std::string>& track_names, bool parse_protocol = false)
-        : url_(url), broadcast_name_(broadcast_name), available_track_names_(track_names), 
-          running_(true), parse_protocol_(parse_protocol), is_connected_(false) {}
+                   const std::vector<std::string>& track_names, const std::string& bind_addr,
+                   bool parse_protocol = false)
+        : url_(url), broadcast_name_(broadcast_name), bind_addr_(bind_addr),
+          available_track_names_(track_names), 
+          running_(true), parse_protocol_(parse_protocol), session_(nullptr), is_connected_(false) {}
 
     ~RelayTestMgrApp() {
         stop();
     }
 
     bool initialize() {
-        // Initialize the MOQ library
-        auto init_result = moq::Client::initialize();
-        if (init_result != moq::Result::Success) {
-            std::cerr << "Failed to initialize MOQ library: " 
-                      << moq::Client::resultToString(init_result) << std::endl;
+        // Initialize the MOQ Manager library
+        MoqMgrResult result = moq_mgr_init();
+        if (result != MoqMgrResult::Success) {
+            std::cerr << "Failed to initialize MOQ Manager library" << std::endl;
             return false;
         }
 
-        std::cout << "MOQ library initialized successfully" << std::endl;
+        std::cout << "MOQ Manager library initialized successfully" << std::endl;
         return true;
     }
 
@@ -234,49 +235,70 @@ public:
 
         std::cout << "Connecting to: " << url_ << std::endl;
 
-        // Create session configuration
-        moq_mgr::Session::SessionConfig config;
-        config.moq_server = url_;
-        config.moq_namespace = broadcast_name_;
-
-        // Create subscription configurations for available tracks
-        std::vector<moq_mgr::Consumer::SubscriptionConfig> subscriptions;
+        // Create session (mode: 1 = SubscribeOnly, reconnect: 1 = enabled)
+        session_ = moq_mgr_session_create_with_bind(
+            url_.c_str(),
+            broadcast_name_.c_str(),
+            1,  // SubscribeOnly mode
+            1,  // Enable reconnect
+            bind_addr_.c_str()  // Bind address for IPv4
+        );
         
+        if (!session_) {
+            std::cerr << "Failed to create MOQ Manager session" << std::endl;
+            return false;
+        }
+
+        // Set up error callback
+        moq_mgr_session_set_error_callback(
+            session_,
+            [](const char* msg, void* user_data) {
+                std::cerr << "Session error: " << msg << std::endl;
+            },
+            nullptr
+        );
+        
+        // Set up status callback
+        moq_mgr_session_set_status_callback(
+            session_,
+            [](const char* msg, void* user_data) {
+                std::cout << "Session status: " << msg << std::endl;
+            },
+            nullptr
+        );
+
+        // Add subscriptions for all tracks
         for (const auto& track_name : available_track_names_) {
-            // Create track data handler with protocol parsing option
+            // Create track data handler
             auto handler = std::make_shared<TrackDataHandler>(track_name, parse_protocol_);
             track_handlers_[track_name] = handler;
             
-            // Create subscription config
-            moq_mgr::Consumer::SubscriptionConfig sub_config;
-            sub_config.moq_track_name = track_name;
-            sub_config.data_callback = [handler](uint8_t* data, size_t size) {
-                handler->handleData(data, size);
-            };
+            // Add subscription with callback
+            moq_mgr_session_add_subscription(
+                session_,
+                track_name.c_str(),
+                [](const uint8_t* data, size_t size, void* user_data) {
+                    auto* handler = static_cast<TrackDataHandler*>(user_data);
+                    handler->handleData(const_cast<uint8_t*>(data), size);
+                },
+                handler.get()
+            );
             
-            subscriptions.push_back(sub_config);
+            std::cout << "Added subscription for track: " << track_name << std::endl;
         }
 
-        // Create consumer session
-        consumer_session_ = std::make_unique<moq_mgr::ConsumerSession>(config, std::move(subscriptions));
-        
-        // Set up callbacks
-        consumer_session_->set_error_callback([](const std::string& error) {
-            std::cerr << "Session error: " << error << std::endl;
-        });
-        
-        consumer_session_->set_status_callback([](const std::string& status) {
-            std::cout << "Session status: " << status << std::endl;
-        });
-
         // Start the session
-        if (!consumer_session_->start()) {
+        MoqMgrResult result = moq_mgr_session_start(session_);
+        if (result != MoqMgrResult::Success) {
             std::cerr << "Failed to start consumer session" << std::endl;
-            consumer_session_.reset();
+            moq_mgr_session_destroy(session_);
+            session_ = nullptr;
+            track_handlers_.clear();
             return false;
         }
 
         std::cout << "Successfully connected to MOQ server" << std::endl;
+        std::cout << "Note: Subscriptions will activate automatically when tracks appear in catalog" << std::endl;
         is_connected_ = true;
         return true;
     }
@@ -289,10 +311,11 @@ public:
 
         std::cout << "Disconnecting from relay..." << std::endl;
         
-        // Stop the consumer session
-        if (consumer_session_) {
-            consumer_session_->stop();
-            consumer_session_.reset();
+        // Stop and destroy the session
+        if (session_) {
+            moq_mgr_session_stop(session_);
+            moq_mgr_session_destroy(session_);
+            session_ = nullptr;
         }
         
         // Clear track handlers
@@ -308,7 +331,7 @@ public:
         if (is_connected_) {
             std::cout << "URL: " << url_ << std::endl;
             std::cout << "Broadcast: " << broadcast_name_ << std::endl;
-            std::cout << "Session Running: " << (consumer_session_ && consumer_session_->is_running() ? "YES" : "NO") << std::endl;
+            std::cout << "Session Running: " << (session_ && moq_mgr_session_is_running(session_) ? "YES" : "NO") << std::endl;
         }
         std::cout << "Active tracks: " << track_handlers_.size() << std::endl;
         for (const auto& pair : track_handlers_) {
@@ -327,8 +350,8 @@ public:
         std::cout << "s - Show status" << std::endl;
         std::cout << "h - Show this help" << std::endl;
         std::cout << "q - Quit application" << std::endl;
-        std::cout << "\nNote: With MOQ Manager, all tracks are subscribed automatically when connecting." << std::endl;
-        std::cout << "Track subscriptions: ";
+        std::cout << "\nNote: With MOQ Manager, tracks are subscribed only when they appear in the catalog." << std::endl;
+        std::cout << "Requested track subscriptions: ";
         for (size_t i = 0; i < available_track_names_.size(); ++i) {
             if (i > 0) std::cout << ", ";
             std::cout << available_track_names_[i];
@@ -406,7 +429,8 @@ void printUsage(const char* program_name) {
               << "  " << program_name << " --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio\n"
               << "  " << program_name << " --broadcast peter --parse-protocol\n\n"
               << "This example uses the MOQ Manager abstraction which automatically handles session management,\n"
-              << "reconnection, and subscription lifecycle. All configured tracks are subscribed when connecting.\n"
+              << "reconnection, catalog processing, and subscription lifecycle. Tracks are only subscribed when\n"
+              << "they appear in the broadcast's catalog.\n"
               << "Use --parse-protocol to enable detailed parsing of Sesame Binary Protocol packets.\n"
               << std::endl;
 }
@@ -434,6 +458,7 @@ int main(int argc, char* argv[]) {
     std::string broadcast_name = "peter";
     std::vector<std::string> track_names = {"video", "audio"};
     bool parse_protocol = false;
+    std::string bind_addr = "0.0.0.0:0";  // Default to IPv4
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -446,6 +471,8 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--tracks" && i + 1 < argc) {
             std::string tracks_str = argv[++i];
             track_names = splitTracks(tracks_str);
+        } else if (arg == "--bind" && i + 1 < argc) {
+            bind_addr = argv[++i];
         } else if (arg == "--parse-protocol") {
             parse_protocol = true;
         } else if (arg == "--help") {
@@ -484,11 +511,12 @@ int main(int argc, char* argv[]) {
         std::cout << track_names[i];
     }
     std::cout << std::endl;
+    std::cout << "Bind Address: " << bind_addr << std::endl;
     std::cout << "Protocol Parsing: " << (parse_protocol ? "ENABLED" : "DISABLED") << std::endl;
     std::cout << std::endl;
 
     // Create and run the test app
-    RelayTestMgrApp app(url, broadcast_name, track_names, parse_protocol);
+    RelayTestMgrApp app(url, broadcast_name, track_names, bind_addr, parse_protocol);
     
     if (!app.initialize()) {
         std::cerr << "Failed to initialize application" << std::endl;

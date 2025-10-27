@@ -1,5 +1,5 @@
 [workspace]
-members = ["moq-ffi", "examples/rs/moq-clock", "examples/rs/relay-test", "examples/rs/catalog-test"]
+members = ["moq-mgr", "examples/rs/moq-clock", "examples/rs/relay-test"]
 resolver = "2"
 
 [workspace.dependencies]
