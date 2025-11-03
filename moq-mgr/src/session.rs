@@ -16,7 +16,6 @@ use crate::producer::{BroadcastConfig, Producer};
 pub enum SessionMode {
     PublishOnly,
     SubscribeOnly,
-    PublishAndSubscribe,
 }
 
 #[derive(Clone)]
@@ -207,17 +206,6 @@ impl Session {
                 
                 // Start catalog consumer
                 self.start_catalog_consumer()?;
-                
-                moq_session
-            }
-            SessionMode::PublishAndSubscribe => {
-                let origin = Origin::produce();
-                let moq_session = 
-                    moq_lite::Session::connect(session, origin.consumer, Some(origin.producer))
-                        .await?;
-                
-                // Setup both producer and consumer
-                // TODO: Implement dual mode
                 
                 moq_session
             }

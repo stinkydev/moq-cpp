@@ -72,7 +72,7 @@ enum MoqMgrResult moq_mgr_init_with_logging(MoqMgrLogCallback log_callback,
  * Parameters:
  * - server_url: The MoQ server URL (e.g., "https://relay.moq.example.com:4433")
  * - namespace: The broadcast namespace to use
- * - mode: Session mode (0=PublishOnly, 1=SubscribeOnly, 2=PublishAndSubscribe)
+ * - mode: Session mode (0=PublishOnly, 1=SubscribeOnly)
  * - reconnect: Whether to automatically reconnect on failure (0=false, 1=true)
  *
  * Returns: Pointer to MoqMgrSession or null on error
@@ -88,7 +88,7 @@ struct MoqMgrSession *moq_mgr_session_create(const char *server_url,
  * Parameters:
  * - server_url: The MoQ server URL (e.g., "https://relay.moq.example.com:4433")
  * - namespace: The broadcast namespace to use
- * - mode: Session mode (0=PublishOnly, 1=SubscribeOnly, 2=PublishAndSubscribe)
+ * - mode: Session mode (0=PublishOnly, 1=SubscribeOnly)
  * - reconnect: Whether to automatically reconnect on failure (0=false, 1=true)
  * - bind_addr: Optional bind address (e.g., "0.0.0.0:0" for IPv4, null for default)
  *

@@ -99,7 +99,7 @@ pub extern "C" fn moq_mgr_init_with_logging(
 /// Parameters:
 /// - server_url: The MoQ server URL (e.g., "https://relay.moq.example.com:4433")
 /// - namespace: The broadcast namespace to use
-/// - mode: Session mode (0=PublishOnly, 1=SubscribeOnly, 2=PublishAndSubscribe)
+/// - mode: Session mode (0=PublishOnly, 1=SubscribeOnly)
 /// - reconnect: Whether to automatically reconnect on failure (0=false, 1=true)
 ///
 /// Returns: Pointer to MoqMgrSession or null on error
@@ -118,7 +118,7 @@ pub extern "C" fn moq_mgr_session_create(
 /// Parameters:
 /// - server_url: The MoQ server URL (e.g., "https://relay.moq.example.com:4433")
 /// - namespace: The broadcast namespace to use
-/// - mode: Session mode (0=PublishOnly, 1=SubscribeOnly, 2=PublishAndSubscribe)
+/// - mode: Session mode (0=PublishOnly, 1=SubscribeOnly)
 /// - reconnect: Whether to automatically reconnect on failure (0=false, 1=true)
 /// - bind_addr: Optional bind address (e.g., "0.0.0.0:0" for IPv4, null for default)
 ///
@@ -157,7 +157,6 @@ pub extern "C" fn moq_mgr_session_create_with_bind(
     let session_mode = match mode {
         0 => SessionMode::PublishOnly,
         1 => SessionMode::SubscribeOnly,
-        2 => SessionMode::PublishAndSubscribe,
         _ => return std::ptr::null_mut(),
     };
 
