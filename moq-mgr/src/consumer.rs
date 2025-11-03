@@ -11,6 +11,7 @@ pub type DataCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
 pub struct SubscriptionConfig {
     pub moq_track_name: String,
     pub data_callback: DataCallback,
+    pub reconnect_callback: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 pub struct Consumer {
@@ -63,9 +64,10 @@ impl Consumer {
         let running = self.running.clone();
         let callback = self.config.data_callback.clone();
         let track_name = self.config.moq_track_name.clone();
+        let reconnect_callback = self.config.reconnect_callback.clone();
 
         let handle = tokio::spawn(async move {
-            Self::consumer_loop(track_consumer, running, callback, track_name).await;
+            Self::consumer_loop(track_consumer, running, callback, track_name, reconnect_callback).await;
         });
 
         *self.worker_handle.lock() = Some(handle);
@@ -80,6 +82,7 @@ impl Consumer {
         running: Arc<Mutex<bool>>,
         callback: DataCallback,
         track_name: String,
+        reconnect_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     ) {
         while *running.lock() {
             let consumer_opt = {
@@ -126,6 +129,15 @@ impl Consumer {
                     }
                     Err(e) => {
                         tracing::error!("Error getting next group for track {}: {}", track_name, e);
+                        
+                        // Trigger reconnection immediately on any next_group error
+                        if let Some(ref reconnect_cb) = reconnect_callback {
+                            tracing::warn!("Triggering reconnection due to next_group error on track {}", track_name);
+                            reconnect_cb();
+                            return; // Exit this consumer loop
+                        }
+                        
+                        // If no reconnection callback, just break
                         break;
                     }
                 }

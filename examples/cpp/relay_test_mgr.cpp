@@ -12,6 +12,29 @@
 #include <cstring>
 #include <conio.h>  // For _kbhit() and _getch() on Windows
 
+// Logging callback function
+extern "C" void log_callback(int32_t level, const char* message, void* user_data) {
+    const char* level_str;
+    switch (level) {
+        case 0: level_str = "ERROR"; break;
+        case 1: level_str = "WARN "; break;
+        case 2: level_str = "INFO "; break;
+        case 3: level_str = "DEBUG"; break;
+        case 4: level_str = "TRACE"; break;
+        default: level_str = "?????"; break;
+    }
+    
+    // Get current timestamp
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+    
+    std::cout << "[" << std::put_time(std::localtime(&time_t), "%H:%M:%S") 
+              << "." << std::setfill('0') << std::setw(3) << ms.count()
+              << " " << level_str << "] " << message << std::endl;
+}
+
 class TrackDataHandler {
 private:
     std::string track_name_;
@@ -197,6 +220,7 @@ private:
     std::vector<std::string> available_track_names_;
     std::atomic<bool> running_;
     bool parse_protocol_;
+    bool verbose_logging_;
     
     // MOQ MGR objects
     MoqMgrSession* session_;
@@ -206,18 +230,21 @@ private:
 public:
     RelayTestMgrApp(const std::string& url, const std::string& broadcast_name, 
                    const std::vector<std::string>& track_names, const std::string& bind_addr,
-                   bool parse_protocol = false)
+                   bool parse_protocol = false, bool verbose_logging = false)
         : url_(url), broadcast_name_(broadcast_name), bind_addr_(bind_addr),
           available_track_names_(track_names), 
-          running_(true), parse_protocol_(parse_protocol), session_(nullptr), is_connected_(false) {}
+          running_(true), parse_protocol_(parse_protocol), verbose_logging_(verbose_logging),
+          session_(nullptr), is_connected_(false) {}
 
     ~RelayTestMgrApp() {
         stop();
     }
 
     bool initialize() {
-        // Initialize the MOQ Manager library
-        MoqMgrResult result = moq_mgr_init();
+        // Initialize the MOQ Manager library with logging callback
+        // include_moq_libs = 0: Only moq-mgr logs (default)
+        // include_moq_libs = 1: Include moq-lite/moq-native logs (verbose)
+        MoqMgrResult result = moq_mgr_init_with_logging(log_callback, nullptr, verbose_logging_ ? 1 : 0);
         if (result != MoqMgrResult::Success) {
             std::cerr << "Failed to initialize MOQ Manager library" << std::endl;
             return false;
@@ -424,14 +451,17 @@ void printUsage(const char* program_name) {
               << "  --broadcast <name>   Broadcast name to subscribe to (default: peter)\n"
               << "  --tracks <track1,track2,...>  Comma-separated list of tracks (default: video,audio)\n"
               << "  --parse-protocol     Enable Sesame Binary Protocol parsing (default: off)\n"
+              << "  --verbose-logging    Include logs from moq-lite/moq-native libraries (default: off)\n"
               << "  --help               Show this help message\n\n"
               << "Example:\n"
               << "  " << program_name << " --url https://relay.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio\n"
-              << "  " << program_name << " --broadcast peter --parse-protocol\n\n"
+              << "  " << program_name << " --broadcast peter --parse-protocol\n"
+              << "  " << program_name << " --broadcast peter --verbose-logging\n\n"
               << "This example uses the MOQ Manager abstraction which automatically handles session management,\n"
               << "reconnection, catalog processing, and subscription lifecycle. Tracks are only subscribed when\n"
               << "they appear in the broadcast's catalog.\n"
               << "Use --parse-protocol to enable detailed parsing of Sesame Binary Protocol packets.\n"
+              << "Use --verbose-logging to see detailed logs from the underlying MOQ libraries.\n"
               << std::endl;
 }
 
@@ -458,6 +488,7 @@ int main(int argc, char* argv[]) {
     std::string broadcast_name = "peter";
     std::vector<std::string> track_names = {"video", "audio"};
     bool parse_protocol = false;
+    bool verbose_logging = false;
     std::string bind_addr = "0.0.0.0:0";  // Default to IPv4
 
     // Parse command line arguments
@@ -475,6 +506,8 @@ int main(int argc, char* argv[]) {
             bind_addr = argv[++i];
         } else if (arg == "--parse-protocol") {
             parse_protocol = true;
+        } else if (arg == "--verbose-logging") {
+            verbose_logging = true;
         } else if (arg == "--help") {
             printUsage(argv[0]);
             return 0;
@@ -516,7 +549,7 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     // Create and run the test app
-    RelayTestMgrApp app(url, broadcast_name, track_names, bind_addr, parse_protocol);
+    RelayTestMgrApp app(url, broadcast_name, track_names, bind_addr, parse_protocol, verbose_logging);
     
     if (!app.initialize()) {
         std::cerr << "Failed to initialize application" << std::endl;

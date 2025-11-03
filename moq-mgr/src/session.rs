@@ -196,11 +196,8 @@ impl Session {
                 let moq_session = 
                     moq_lite::Session::connect(session, None, Some(origin.producer)).await?;
                 
-                // Setup broadcast consumer
-                let broadcast_consumer = origin
-                    .consumer
-                    .consume_broadcast(&self.config.moq_namespace)
-                    .context("Failed to consume broadcast")?;
+                // Setup broadcast consumer with retry logic
+                let broadcast_consumer = self.consume_broadcast_with_retry(&origin.consumer).await?;
                 
                 *self.broadcast_consumer.write() = Some(Arc::new(broadcast_consumer));
                 
@@ -241,6 +238,39 @@ impl Session {
         Ok(())
     }
     
+    async fn consume_broadcast_with_retry(&self, consumer: &OriginConsumer) -> Result<BroadcastConsumer> {
+        let mut retry_count = 0;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        
+        loop {
+            match consumer.consume_broadcast(&self.config.moq_namespace) {
+                Some(broadcast_consumer) => {
+                    if retry_count > 0 {
+                        self.notify_status(&format!("Successfully connected to broadcast '{}' after {} retries", 
+                                                   self.config.moq_namespace, retry_count));
+                    }
+                    return Ok(broadcast_consumer);
+                }
+                None => {
+                    retry_count += 1;
+                    
+                    self.notify_status(&format!("Broadcast '{}' not available, retrying in 2 seconds... (attempt {})", 
+                                               self.config.moq_namespace, retry_count));
+                    
+                    // Wait 2 seconds but allow cancellation via shutdown signal
+                    tokio::select! {
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+                            // Continue retrying
+                        }
+                        _ = shutdown_rx.recv() => {
+                            return Err(anyhow::anyhow!("Broadcast retry cancelled due to session shutdown"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     fn start_connection_monitor(&self, session: Arc<moq_lite::Session<moq_native::web_transport_quinn::Session>>) {
         let is_connected = self.is_connected.clone();
         let status_callback = self.status_callback.clone();
@@ -249,11 +279,8 @@ impl Session {
         
         tokio::spawn(async move {
             loop {
-                // Call closed() on the Arc-deref'd session (should work with &self)
-                let session_closed = session.closed();
-                
                 tokio::select! {
-                    result = session_closed => {
+                    result = session.closed() => {
                         tracing::warn!("MoQ session closed: {:?}", result);
                         *is_connected.write() = false;
                         
@@ -271,8 +298,7 @@ impl Session {
                                 if let Some(cb) = status_callback.read().as_ref() {
                                     cb("Reconnected to MoQ server");
                                 }
-                                // After successful reconnect, the new start() call will have
-                                // created a new monitor, so we can exit this one
+                                // After successful reconnect, exit this monitor (new one will be created)
                                 break;
                             }
                             Err(e) => {
@@ -319,10 +345,10 @@ impl Session {
         // Wait a moment
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         
-        // Reconnect
+        // Reconnect - start() already has broadcast retry logic
         self.start().await
     }
-
+    
     fn start_catalog_consumer(&self) -> Result<()> {
         let broadcast_consumer = self
             .broadcast_consumer
@@ -339,6 +365,7 @@ impl Session {
                 let active_consumers = self.active_consumers.clone();
                 let broadcast_consumer = broadcast_consumer.clone();
                 let status_callback = self.status_callback.clone();
+                let session_for_reconnect = self.clone(); // Clone self for reconnection callbacks
                 
                 Arc::new(move |data: &[u8]| {
                     if let Some(processor) = catalog_processor.read().as_ref() {
@@ -364,9 +391,27 @@ impl Session {
                                     callback(&format!("Starting subscription to: {}", track_name));
                                 }
                                 
+                                // Create a modified subscription config with reconnect callback
+                                let session_for_track = session_for_reconnect.clone();
+                                let track_name_for_log = track_name.clone();
+                                let modified_config = SubscriptionConfig {
+                                    moq_track_name: sub_config.moq_track_name.clone(),
+                                    data_callback: sub_config.data_callback.clone(),
+                                    reconnect_callback: Some(Arc::new(move || {
+                                        let session = session_for_track.clone();
+                                        let track = track_name_for_log.clone();
+                                        tokio::spawn(async move {
+                                            tracing::info!("Consumer-triggered reconnection starting for track {}...", track);
+                                            if let Err(e) = session.reconnect().await {
+                                                tracing::error!("Consumer-triggered reconnection failed: {}", e);
+                                            }
+                                        });
+                                    })),
+                                };
+                                
                                 match Consumer::new(
                                     broadcast_consumer.clone(),
-                                    sub_config.clone(),
+                                    modified_config,
                                 ) {
                                     Ok(consumer) => {
                                         active.insert(track_name.clone(), consumer);
@@ -379,6 +424,18 @@ impl Session {
                         }
                     }
                 })
+            },
+            reconnect_callback: {
+                let session = self.clone();
+                Some(Arc::new(move || {
+                    let session = session.clone();
+                    tokio::spawn(async move {
+                        tracing::info!("Catalog consumer-triggered reconnection starting...");
+                        if let Err(e) = session.reconnect().await {
+                            tracing::error!("Catalog consumer-triggered reconnection failed: {}", e);
+                        }
+                    });
+                }))
             },
         };
 

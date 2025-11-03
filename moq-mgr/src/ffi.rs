@@ -33,12 +33,64 @@ pub type MoqMgrStatusCallback = extern "C" fn(*const c_char, *mut c_void);
 /// Parameters: data pointer, data length, user_data
 pub type MoqMgrDataCallback = extern "C" fn(*const u8, usize, *mut c_void);
 
+/// Log callback function type
+/// Parameters: level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE), message, user_data
+pub type MoqMgrLogCallback = extern "C" fn(i32, *const c_char, *mut c_void);
+
+// Global storage for the log callback
+static mut LOG_CALLBACK: Option<(MoqMgrLogCallback, *mut c_void)> = None;
+static LOG_CALLBACK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Initialize the MoQ Manager library
 /// This should be called once at startup
 #[no_mangle]
 pub extern "C" fn moq_mgr_init() -> MoqMgrResult {
-    // Initialize tracing/logging
-    tracing_subscriber::fmt::init();
+    // Initialize basic tracing to stdout as fallback
+    let _ = tracing_subscriber::fmt::try_init();
+    MoqMgrResult::Success
+}
+
+/// Initialize the MoQ Manager library with custom log callback
+/// This should be called once at startup if you want to receive log messages
+/// 
+/// Parameters:
+/// - log_callback: Function to receive log messages
+/// - user_data: User data pointer passed to log callback
+/// - include_moq_libs: If true, include logs from moq-lite/moq-native; if false, only moq-mgr logs
+#[no_mangle]
+pub extern "C" fn moq_mgr_init_with_logging(
+    log_callback: MoqMgrLogCallback,
+    user_data: *mut c_void,
+    include_moq_libs: i32,
+) -> MoqMgrResult {
+    let _lock = LOG_CALLBACK_LOCK.lock().unwrap();
+    
+    // Store the callback globally
+    unsafe {
+        LOG_CALLBACK = Some((log_callback, user_data));
+    }
+    
+    // Initialize tracing with our custom subscriber
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    
+    let callback_layer = CallbackLayer::new();
+    
+    // Create filter based on include_moq_libs flag
+    let filter = if include_moq_libs != 0 {
+        // Include all logs
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("debug"))
+    } else {
+        // Only include moq_mgr logs
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("moq_mgr=debug"))
+    };
+    
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(callback_layer)
+        .try_init();
+    
     MoqMgrResult::Success
 }
 
@@ -227,6 +279,7 @@ pub extern "C" fn moq_mgr_session_add_subscription(
     let subscription = SubscriptionConfig {
         moq_track_name: track_name_str,
         data_callback,
+        reconnect_callback: None, // FFI layer doesn't provide reconnect callbacks - session handles it
     };
 
     session.session.add_subscription(subscription);
@@ -329,4 +382,89 @@ pub extern "C" fn moq_mgr_session_destroy(session: *mut MoqMgrSession) {
 pub extern "C" fn moq_mgr_get_last_error() -> *const c_char {
     // TODO: Implement thread-local error storage
     std::ptr::null()
+}
+
+// Custom tracing layer that forwards logs to the C callback
+struct CallbackLayer;
+
+impl CallbackLayer {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl<S> tracing_subscriber::Layer<S> for CallbackLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let _lock = LOG_CALLBACK_LOCK.lock().unwrap();
+        
+        unsafe {
+            if let Some((callback, user_data)) = LOG_CALLBACK {
+                // Convert tracing level to our integer representation
+                let level = match *event.metadata().level() {
+                    tracing::Level::ERROR => 0,
+                    tracing::Level::WARN => 1,
+                    tracing::Level::INFO => 2,
+                    tracing::Level::DEBUG => 3,
+                    tracing::Level::TRACE => 4,
+                };
+                
+                // Format the message
+                let mut visitor = MessageVisitor::new();
+                event.record(&mut visitor);
+                
+                // Create a C string for the message
+                if let Ok(c_message) = CString::new(visitor.message) {
+                    callback(level, c_message.as_ptr(), user_data);
+                }
+            }
+        }
+    }
+}
+
+// Visitor to extract the message from tracing events
+struct MessageVisitor {
+    message: String,
+}
+
+impl MessageVisitor {
+    fn new() -> Self {
+        Self {
+            message: String::new(),
+        }
+    }
+}
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{:?}", value);
+            // Remove quotes from debug formatted strings
+            if self.message.starts_with('"') && self.message.ends_with('"') {
+                self.message = self.message[1..self.message.len()-1].to_string();
+            }
+        } else {
+            if !self.message.is_empty() {
+                self.message.push(' ');
+            }
+            self.message.push_str(&format!("{}={:?}", field.name(), value));
+        }
+    }
+    
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message = value.to_string();
+        } else {
+            if !self.message.is_empty() {
+                self.message.push(' ');
+            }
+            self.message.push_str(&format!("{}={}", field.name(), value));
+        }
+    }
 }

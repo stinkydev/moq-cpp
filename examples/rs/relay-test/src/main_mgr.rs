@@ -152,6 +152,7 @@ impl RelayTestApp {
                         );
                     }
                 }),
+                reconnect_callback: None, // The session will provide its own reconnect callback for track consumers
             };
 
             session.add_subscription(subscription);

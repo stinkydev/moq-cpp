@@ -38,11 +38,11 @@ else()
 endif()
 
 if(WIN32)
-    set(RUST_LIB_NAME moq_ffi.lib)
+    set(RUST_LIB_NAME moq_mgr.lib)
 elseif(APPLE)
-    set(RUST_LIB_NAME libmoq_ffi.a)
+    set(RUST_LIB_NAME libmoq_mgr.a)
 else()
-    set(RUST_LIB_NAME libmoq_ffi.a)
+    set(RUST_LIB_NAME libmoq_mgr.a)
 endif()
 
 # Custom command to build the Rust library
@@ -50,7 +50,7 @@ add_custom_command(
     OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME}
     COMMAND ${CARGO_EXECUTABLE} build ${RUST_BUILD_TYPE} --target-dir ${RUST_TARGET_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Rust FFI build completed successfully"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr
     COMMENT "Building Rust FFI library (Debug=${RUST_BUILD_TYPE})"
     VERBATIM
 )
@@ -58,43 +58,26 @@ add_custom_command(
 # Create a target for the Rust library
 add_custom_target(rust_lib ALL DEPENDS ${RUST_LIB_DIR}/${RUST_LIB_NAME})
 
-# Create an imported library target
-add_library(moq_ffi STATIC IMPORTED)
-set_target_properties(moq_ffi PROPERTIES
-    IMPORTED_LOCATION ${RUST_LIB_DIR}/${RUST_LIB_NAME}
-)
-
-add_dependencies(moq_ffi rust_lib)
-
-# Build the Rust MOQ Manager library
-if(WIN32)
-    set(RUST_MGR_LIB_NAME moq_mgr.lib)
-elseif(APPLE)
-    set(RUST_MGR_LIB_NAME libmoq_mgr.a)
-else()
-    set(RUST_MGR_LIB_NAME libmoq_mgr.a)
-endif()
-
-# Custom command to build the moq-mgr Rust library
-add_custom_command(
-    OUTPUT ${RUST_LIB_DIR}/${RUST_MGR_LIB_NAME}
-    COMMAND ${CARGO_EXECUTABLE} build ${RUST_BUILD_TYPE} --target-dir ${RUST_TARGET_DIR}
-    COMMAND ${CMAKE_COMMAND} -E echo "Rust MOQ Manager build completed successfully"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr
-    COMMENT "Building Rust MOQ Manager library"
-    VERBATIM
-)
-
-# Create a target for the Rust manager library
-add_custom_target(rust_mgr_lib ALL DEPENDS ${RUST_LIB_DIR}/${RUST_MGR_LIB_NAME})
-
 # Create an imported library target for moq-mgr
 add_library(moq_mgr STATIC IMPORTED)
 set_target_properties(moq_mgr PROPERTIES
-    IMPORTED_LOCATION ${RUST_LIB_DIR}/${RUST_MGR_LIB_NAME}
+    IMPORTED_LOCATION ${RUST_LIB_DIR}/${RUST_LIB_NAME}
 )
 
-add_dependencies(moq_mgr rust_mgr_lib)
+add_dependencies(moq_mgr rust_lib)
+
+# Link moq_mgr with system libraries
+if(APPLE)
+    target_link_libraries(moq_mgr INTERFACE "-framework Security" "-framework CoreFoundation")
+elseif(UNIX)
+    target_link_libraries(moq_mgr INTERFACE dl m)
+elseif(WIN32)
+    # Windows system libraries needed for Rust dependencies (schannel, rustls_platform_verifier)
+    target_link_libraries(moq_mgr INTERFACE 
+        ws2_32 userenv advapi32 ntdll kernel32 bcrypt 
+        crypt32 secur32 ncrypt ole32 shell32
+    )
+endif()
 
 # Link moq_mgr with system libraries
 if(APPLE)
@@ -102,11 +85,16 @@ if(APPLE)
 elseif(UNIX)
     target_link_libraries(moq_mgr INTERFACE dl m pthread)
 elseif(WIN32)
+    # Windows system libraries needed for Rust dependencies (schannel, rustls_platform_verifier)
     target_link_libraries(moq_mgr INTERFACE 
         ws2_32 userenv advapi32 ntdll kernel32 bcrypt 
         crypt32 secur32 ncrypt ole32 shell32
     )
 endif()
+
+# Find threading library
+find_package(Threads REQUIRED)
+target_link_libraries(moq_mgr INTERFACE Threads::Threads)
 
 
 # C++ wrapper library (commented out - files don't exist in this branch)
@@ -161,7 +149,7 @@ if(WIN32)
         examples/cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr
     )
-    add_dependencies(moq_relay_test_mgr rust_mgr_lib)
+    add_dependencies(moq_relay_test_mgr rust_lib)
     
     # Catalog test
     # add_executable(moq_catalog_test examples/cpp/catalog_test.cpp)

@@ -20,6 +20,12 @@ typedef enum MoqMgrResult {
 typedef struct MoqMgrSession MoqMgrSession;
 
 /**
+ * Log callback function type
+ * Parameters: level (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE), message, user_data
+ */
+typedef void (*MoqMgrLogCallback)(int32_t, const char*, void*);
+
+/**
  * Error callback function type
  * Parameters: error_message (null-terminated C string), user_data
  */
@@ -46,6 +52,19 @@ extern "C" {
  * This should be called once at startup
  */
 enum MoqMgrResult moq_mgr_init(void);
+
+/**
+ * Initialize the MoQ Manager library with custom log callback
+ * This should be called once at startup if you want to receive log messages
+ *
+ * Parameters:
+ * - log_callback: Function to receive log messages
+ * - user_data: User data pointer passed to log callback
+ * - include_moq_libs: If true, include logs from moq-lite/moq-native; if false, only moq-mgr logs
+ */
+enum MoqMgrResult moq_mgr_init_with_logging(MoqMgrLogCallback log_callback,
+                                            void *user_data,
+                                            int32_t include_moq_libs);
 
 /**
  * Create a new MoQ Manager session
