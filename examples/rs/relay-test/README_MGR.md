@@ -82,7 +82,7 @@ session.add_subscription(SubscriptionConfig {
 
 ### Run Original Version
 ```bash
-cargo run --bin relay-test -- --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter
+cargo run --bin relay-test -- --url https://relay.moq.sesame-streams.com:4433 --broadcast peter
 ```
 
 ### Run MOQ Manager Version
@@ -96,7 +96,7 @@ path = "src/main_mgr.rs"
 
 Then run:
 ```bash
-cargo run --bin relay-test-mgr -- --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter
+cargo run --bin relay-test-mgr -- --url https://relay.moq.sesame-streams.com:4433 --broadcast peter
 ```
 
 ## Keyboard Controls

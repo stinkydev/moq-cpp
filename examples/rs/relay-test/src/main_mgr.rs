@@ -16,7 +16,7 @@ use moq_mgr::{Session, SessionConfig, SessionMode, SubscriptionConfig};
 #[derive(Parser, Clone)]
 pub struct Config {
     /// Connect to the given URL starting with https://
-    #[arg(long, default_value = "https://relay1.moq.sesame-streams.com:4433")]
+    #[arg(long, default_value = "https://relay.moq.sesame-streams.com:4433")]
     pub url: Url,
 
     /// The name of the broadcast to subscribe to.

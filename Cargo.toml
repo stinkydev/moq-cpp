@@ -8,6 +8,6 @@ tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 url = "2.0"
-moq-lite = { git = "https://github.com/kixelated/moq", tag = "moq-lite-v0.8.0" }
-moq-native = { git = "https://github.com/kixelated/moq", tag = "moq-native-v0.8.4" }
+moq-lite = { git = "https://github.com/kixelated/moq", tag = "moq-lite-v0.9.6" }
+moq-native = { git = "https://github.com/kixelated/moq", tag = "moq-native-v0.9.6" }
 

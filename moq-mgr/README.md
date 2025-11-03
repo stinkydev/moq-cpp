@@ -43,7 +43,7 @@ int main() {
     
     // Create consumer session
     auto* session = moq_mgr_session_create(
-        "https://relay1.moq.sesame-streams.com:4433",
+        "https://relay.moq.sesame-streams.com:4433",
         "my-broadcast",
         1,  // SubscribeOnly mode
         1   // Enable auto-reconnect

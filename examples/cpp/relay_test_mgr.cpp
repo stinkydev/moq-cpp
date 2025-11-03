@@ -420,13 +420,13 @@ private:
 void printUsage(const char* program_name) {
     std::cout << "Usage: " << program_name << " [OPTIONS]\n\n"
               << "Options:\n"
-              << "  --url <url>          MOQ relay URL (default: https://relay1.moq.sesame-streams.com:4433)\n"
+              << "  --url <url>          MOQ relay URL (default: https://relay.moq.sesame-streams.com:4433)\n"
               << "  --broadcast <name>   Broadcast name to subscribe to (default: peter)\n"
               << "  --tracks <track1,track2,...>  Comma-separated list of tracks (default: video,audio)\n"
               << "  --parse-protocol     Enable Sesame Binary Protocol parsing (default: off)\n"
               << "  --help               Show this help message\n\n"
               << "Example:\n"
-              << "  " << program_name << " --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio\n"
+              << "  " << program_name << " --url https://relay.moq.sesame-streams.com:4433 --broadcast peter --tracks video,audio\n"
               << "  " << program_name << " --broadcast peter --parse-protocol\n\n"
               << "This example uses the MOQ Manager abstraction which automatically handles session management,\n"
               << "reconnection, catalog processing, and subscription lifecycle. Tracks are only subscribed when\n"
@@ -454,7 +454,7 @@ std::vector<std::string> splitTracks(const std::string& tracks_str) {
 
 int main(int argc, char* argv[]) {
     // Default values
-    std::string url = "https://relay1.moq.sesame-streams.com:4433";
+    std::string url = "https://relay.moq.sesame-streams.com:4433";
     std::string broadcast_name = "peter";
     std::vector<std::string> track_names = {"video", "audio"};
     bool parse_protocol = false;

@@ -17,11 +17,11 @@ This version directly uses the MOQ-lite API with manual track subscription.
 # Build
 cargo build --bin relay-test
 
-# Run with default settings (peter broadcast on relay1)
+# Run with default settings (peter broadcast on relay)
 cargo run --bin relay-test
 
 # Run with custom settings
-cargo run --bin relay-test -- --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter --tracks "video/hd,audio/data"
+cargo run --bin relay-test -- --url https://relay.moq.sesame-streams.com:4433 --broadcast peter --tracks "video/hd,audio/data"
 ```
 
 **Code**: `examples/rs/relay-test/src/main.rs` (599 lines)
@@ -38,7 +38,7 @@ cargo build --bin relay-test-mgr
 cargo run --bin relay-test-mgr
 
 # Run with custom settings
-cargo run --bin relay-test-mgr -- --url https://relay1.moq.sesame-streams.com:4433 --broadcast peter --tracks "video/hd,audio/data"
+cargo run --bin relay-test-mgr -- --url https://relay.moq.sesame-streams.com:4433 --broadcast peter --tracks "video/hd,audio/data"
 ```
 
 **Code**: `examples/rs/relay-test/src/main_mgr.rs` (239 lines - 60% less!)
@@ -80,7 +80,7 @@ All versions support the same keyboard controls:
 ### Common Options
 
 ```
---url <URL>              MOQ relay URL (default: https://relay1.moq.sesame-streams.com:4433)
+--url <URL>              MOQ relay URL (default: https://relay.moq.sesame-streams.com:4433)
 --broadcast <NAME>       Broadcast namespace to subscribe to (default: peter)
 --tracks <LIST>          Comma-separated list of track names (default: video/hd,audio/data)
 ```
@@ -108,7 +108,7 @@ cargo run --bin relay-test-mgr -- --url https://my-relay.example.com:4433
 ```
 MOQ Relay Test Application (using MOQ Manager)
 =============================================
-URL: https://relay1.moq.sesame-streams.com:4433
+URL: https://relay.moq.sesame-streams.com:4433
 Broadcast: peter
 Tracks: video/hd, audio/data
 
@@ -122,7 +122,7 @@ q - Quit application
 Note: With MOQ Manager, tracks are subscribed only when they appear in the catalog.
 ========================
 
-Connecting to: https://relay1.moq.sesame-streams.com:4433
+Connecting to: https://relay.moq.sesame-streams.com:4433
 Broadcast: peter
 Tracks: video/hd, audio/data
 Added subscription for track: video/hd
@@ -145,7 +145,7 @@ Track audio/data: 200 messages, 25600 bytes
 ```
 === Status ===
 Connected: true
-URL: https://relay1.moq.sesame-streams.com:4433
+URL: https://relay.moq.sesame-streams.com:4433
 Broadcast: peter
 Session Running: true
 Track Statistics:
