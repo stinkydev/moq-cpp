@@ -59,21 +59,6 @@ jobs:
         ls -la Cargo.toml || echo "Cargo.toml not found"
       shell: bash
       
-    - name: Build Rust library first (Ubuntu)
-      if: runner.os == 'Linux'
-      run: |
-        echo "Building Rust library..."
-        cargo build --release
-        echo "Rust build completed, checking output:"
-        ls -la build/rust-target/release/ || echo "No Rust output found"
-        
-    - name: Build Rust library first (Windows/macOS)
-      if: runner.os != 'Linux'
-      run: |
-        echo "Building Rust library..."
-        cargo build --release
-        echo "Rust build completed"
-      
     - name: Build
       run: cmake --build build --parallel --config Release
       
@@ -81,15 +66,17 @@ jobs:
       run: |
         cd build
         cmake --install . --prefix ../install --config Release
+      shell: bash
       
     - name: Build examples against installed library
       run: |
         cd examples
-        cmake -B example-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=../install
+        cmake -B example-build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/../install"
         cmake --build example-build --parallel --config Release
         
         echo "Examples built against installed library:"
-        ls -la example-build/
+        ls -la example-build/ || dir example-build
+      shell: bash
       
     - name: List build artifacts
       run: |
