@@ -46,6 +46,10 @@ extern "C" void LogCallbackWrapper(const char* target, int level,
 extern "C" void DataCallbackWrapper(const char* track, const uint8_t* data,
                                     size_t size) {
   // This will be set up per session in SetDataCallback
+  // Suppress unused parameter warnings
+  (void)track;
+  (void)data;
+  (void)size;
 }
 
 }  // namespace

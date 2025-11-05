@@ -7,6 +7,20 @@
 #include <string>
 #include <vector>
 
+// Windows DLL export/import macros
+#ifdef _WIN32
+  #ifdef BUILDING_MOQ_CPP
+    #define MOQ_API __declspec(dllexport)
+  #else
+    #define MOQ_API __declspec(dllimport)
+  #endif
+  // Suppress warnings about STL containers in DLL interface
+  #pragma warning(push)
+  #pragma warning(disable: 4251)
+#else
+  #define MOQ_API
+#endif
+
 namespace moq {
 
 /// Log levels
@@ -42,7 +56,7 @@ using DataCallback =
                        size_t size)>;
 
 /// Track definition
-class TrackDefinition {
+class MOQ_API TrackDefinition {
  public:
   TrackDefinition(const std::string& name, uint32_t priority,
                   TrackType track_type);
@@ -63,7 +77,7 @@ class TrackDefinition {
 };
 
 /// MOQ Session wrapper
-class Session {
+class MOQ_API Session {
  public:
   /// Create a publisher session
   static std::unique_ptr<Session> CreatePublisher(
@@ -110,8 +124,12 @@ class Session {
 /// Initialize the MOQ library
 /// @param log_level The log level for the library
 /// @param log_callback Optional custom log callback
-void Init(LogLevel log_level, const LogCallback& log_callback = nullptr);
+MOQ_API void Init(LogLevel log_level, const LogCallback& log_callback = nullptr);
 
 }  // namespace moq
+
+#ifdef _WIN32
+#pragma warning(pop)
+#endif
 
 #endif  // MOQ_WRAPPER_H

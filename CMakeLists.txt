@@ -32,7 +32,7 @@ endif()
 if(WIN32)
     set(RUST_LIB_NAME "moq_wrapper.dll")
     set(RUST_LIB_PATH "${RUST_TARGET_DIR}/${RUST_LIB_NAME}")
-    set(RUST_IMPLIB_PATH "${RUST_TARGET_DIR}/deps/moq_wrapper.lib")
+    set(RUST_IMPLIB_PATH "${RUST_TARGET_DIR}/moq_wrapper.dll.lib")
 elseif(APPLE)
     set(RUST_LIB_NAME "libmoq_wrapper.dylib")
     set(RUST_LIB_PATH "${RUST_TARGET_DIR}/deps/${RUST_LIB_NAME}")
@@ -68,6 +68,9 @@ target_include_directories(moq-cpp PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>
     $<INSTALL_INTERFACE:include>
 )
+
+# Define export macro for Windows DLL
+target_compile_definitions(moq-cpp PRIVATE BUILDING_MOQ_CPP)
 
 # Create imported target for Rust library properly
 if(WIN32)
