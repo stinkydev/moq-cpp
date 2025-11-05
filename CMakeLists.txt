@@ -157,8 +157,30 @@ install(DIRECTORY cpp/include/ DESTINATION include)
 # Install the Rust library alongside the C++ library
 if(WIN32)
     # On Windows, install both DLL and import library
-    install(FILES ${RUST_LIB_PATH} DESTINATION bin)  # DLL goes to bin
-    install(FILES ${RUST_IMPLIB_PATH} DESTINATION lib)  # .lib goes to lib
+    # Create a custom install script to handle configuration-specific files
+    install(CODE "
+        if(CMAKE_INSTALL_CONFIG_NAME STREQUAL \"Debug\")
+            set(RUST_DLL_PATH \"${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/debug/moq_wrapper.dll\")
+            set(RUST_LIB_PATH \"${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/debug/moq_wrapper.dll.lib\")
+        else()
+            set(RUST_DLL_PATH \"${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/release/moq_wrapper.dll\")
+            set(RUST_LIB_PATH \"${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/release/moq_wrapper.dll.lib\")
+        endif()
+        
+        if(EXISTS \"\${RUST_DLL_PATH}\")
+            file(INSTALL \"\${RUST_DLL_PATH}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}/bin\")
+            message(STATUS \"Installed: \${CMAKE_INSTALL_PREFIX}/bin/moq_wrapper.dll\")
+        else()
+            message(WARNING \"Rust DLL not found at \${RUST_DLL_PATH}\")
+        endif()
+        
+        if(EXISTS \"\${RUST_LIB_PATH}\")
+            file(INSTALL \"\${RUST_LIB_PATH}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\")
+            message(STATUS \"Installed: \${CMAKE_INSTALL_PREFIX}/lib/moq_wrapper.dll.lib\")
+        else()
+            message(WARNING \"Rust import library not found at \${RUST_LIB_PATH}\")
+        endif()
+    ")
 else()
     # On Unix, install shared library to lib
     install(FILES ${RUST_LIB_PATH} DESTINATION lib)
