@@ -1,172 +1,198 @@
 cmake_minimum_required(VERSION 3.16)
-project(moq-c-api VERSION 0.1.3 LANGUAGES CXX)
+project(moq-cpp VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Build options
+option(BUILD_EXAMPLES "Build C++ examples" OFF)
+
 # Find Rust and Cargo
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
+find_program(RUSTC_EXECUTABLE rustc REQUIRED)
 
-# Build the Rust FFI library
-set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
-
-# Choose debug or release based on CMAKE_CONFIGURATION_TYPES
-if(CMAKE_CONFIGURATION_TYPES)
-    # Multi-config generator (like Visual Studio)
-    # We need to handle both Debug and Release configurations
-    # For now, force debug mode since it works correctly
-    set(RUST_BUILD_TYPE "")
-    set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
+# Determine the Rust target directory and library name
+# The .cargo/config.toml redirects target-dir to build/rust-target
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/debug")
+    set(RUST_BUILD_FLAG "")
 else()
-    # Single-config generator (like Unix Makefiles or Ninja)
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set(RUST_BUILD_TYPE "")
-        set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
-    else()
-        # For single-config release, still use debug since it works
-        set(RUST_BUILD_TYPE "")
-        set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
-    endif()
+    set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/release")
+    set(RUST_BUILD_FLAG "--release")
 endif()
 
+# Platform-specific library naming
 if(WIN32)
-    set(RUST_LIB_NAME moq_ffi.lib)
+    set(RUST_LIB_NAME "moq_wrapper.dll")
+    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/${RUST_LIB_NAME}")
 elseif(APPLE)
-    set(RUST_LIB_NAME libmoq_ffi.a)
+    set(RUST_LIB_NAME "libmoq_wrapper.dylib")
+    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/${RUST_LIB_NAME}")
 else()
-    set(RUST_LIB_NAME libmoq_ffi.a)
+    set(RUST_LIB_NAME "libmoq_wrapper.so")
+    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/${RUST_LIB_NAME}")
 endif()
 
-# Custom command to build the Rust library
-add_custom_command(
-    OUTPUT ${RUST_LIB_DIR}/${RUST_LIB_NAME}
-    COMMAND ${CARGO_EXECUTABLE} build ${RUST_BUILD_TYPE} --target-dir ${RUST_TARGET_DIR}
-    COMMAND ${CMAKE_COMMAND} -E echo "Rust FFI build completed successfully"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi
-    COMMENT "Building Rust FFI library (Debug=${RUST_BUILD_TYPE})"
-    VERBATIM
+# Custom target to build the Rust library
+add_custom_target(rust_lib
+    COMMAND ${CARGO_EXECUTABLE} build ${RUST_BUILD_FLAG}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Building Rust library"
+    BYPRODUCTS ${RUST_LIB_PATH}
 )
 
-# Create a target for the Rust library
-add_custom_target(rust_lib ALL DEPENDS ${RUST_LIB_DIR}/${RUST_LIB_NAME})
-
-# Create an imported library target
-add_library(moq_ffi STATIC IMPORTED)
-set_target_properties(moq_ffi PROPERTIES
-    IMPORTED_LOCATION ${RUST_LIB_DIR}/${RUST_LIB_NAME}
+# Create the C++ wrapper library
+add_library(moq-cpp SHARED
+    cpp/src/moq_wrapper.cpp
 )
 
-add_dependencies(moq_ffi rust_lib)
+# Add dependency on Rust library
+add_dependencies(moq-cpp rust_lib)
 
-# C++ wrapper library
-add_library(moq_cpp STATIC
-    moq-cpp/src/moq_client.cpp
-    moq-cpp/src/moq_session.cpp
-    moq-cpp/src/moq_track.cpp
-    moq-cpp/src/moq_broadcast.cpp
-    moq-cpp/src/moq_group.cpp
-)
-
-# Set include directories with absolute paths
-target_include_directories(moq_cpp PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi/include>
+# Set include directories
+target_include_directories(moq-cpp PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>
     $<INSTALL_INTERFACE:include>
 )
 
-# Debug include paths
-message(STATUS "MOQ C++ include path: ${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include")
-message(STATUS "MOQ FFI include path: ${RUST_TARGET_DIR}/release/moq-ffi/include")
-
-# Ensure headers are generated before compiling C++
-add_dependencies(moq_cpp rust_lib)
-
-target_link_libraries(moq_cpp PUBLIC moq_ffi)
-
-add_library(moq_mgr STATIC
-    moq-mgr/src/moq-mgr-session.cc
-    moq-mgr/src/moq-mgr-producer.cc
-    moq-mgr/src/moq-mgr-consumer.cc
+# Create imported target for Rust library
+add_library(rust_moq_wrapper SHARED IMPORTED)
+set_target_properties(rust_moq_wrapper PROPERTIES
+    IMPORTED_LOCATION ${RUST_LIB_PATH}
 )
+add_dependencies(rust_moq_wrapper rust_lib)
 
-target_include_directories(moq_mgr PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-mgr/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-cpp/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/moq-ffi/include>
-    $<INSTALL_INTERFACE:include>
-)
+# Link the Rust library
+target_link_libraries(moq-cpp PRIVATE rust_moq_wrapper)
 
-add_dependencies(moq_mgr moq_cpp)
-target_link_libraries(moq_mgr PUBLIC moq_cpp)
-
-# Example executables
-# Note: Old examples are temporarily disabled due to API changes
-# add_executable(moq_example examples/cpp/basic_example.cpp)
-# target_link_libraries(moq_example moq_cpp)
-
-# add_executable(moq_pub_sub_example examples/cpp/publisher_subscriber_example.cpp)
-# target_link_libraries(moq_pub_sub_example moq_cpp)
-
-add_executable(moq_clock_example examples/cpp/clock_example.cpp)
-target_link_libraries(moq_clock_example moq_cpp)
-
-# Relay test is Windows-only due to use of conio.h
-if(WIN32)
-    add_executable(moq_relay_test examples/cpp/relay_test.cpp)
-    target_link_libraries(moq_relay_test moq_cpp)
-    
-    # Relay test using MOQ Manager abstraction
-    add_executable(moq_relay_test_mgr examples/cpp/relay_test_mgr.cpp)
-    target_link_libraries(moq_relay_test_mgr moq_mgr)
-endif()
-
-# Test executable for CI
-add_executable(moq_test test/basic_test.cpp)
-target_link_libraries(moq_test moq_cpp)
-
-# Find threading library
-find_package(Threads REQUIRED)
-target_link_libraries(moq_cpp PUBLIC Threads::Threads)
-
-# Platform-specific libraries
+# Platform-specific linking
 if(APPLE)
-    target_link_libraries(moq_cpp PUBLIC "-framework Security" "-framework CoreFoundation")
+    target_link_libraries(moq-cpp PRIVATE "-framework CoreFoundation" "-framework Security")
 elseif(UNIX)
-    target_link_libraries(moq_cpp PUBLIC dl m)
+    target_link_libraries(moq-cpp PRIVATE pthread dl)
 elseif(WIN32)
-    # Windows system libraries needed for Rust dependencies (schannel, rustls_platform_verifier)
-    target_link_libraries(moq_cpp PUBLIC 
-        ws2_32 userenv advapi32 ntdll kernel32 bcrypt 
-        crypt32 secur32 ncrypt ole32 shell32
+    target_link_libraries(moq-cpp PRIVATE ws2_32 userenv bcrypt)
+endif()
+
+# Set RPATH for the library to find dependencies
+if(APPLE)
+    set_target_properties(moq-cpp PROPERTIES
+        INSTALL_RPATH "@loader_path"
+        BUILD_RPATH "${RUST_TARGET_DIR}"
+    )
+elseif(UNIX)
+    set_target_properties(moq-cpp PROPERTIES
+        INSTALL_RPATH "$ORIGIN"
+        BUILD_RPATH "${RUST_TARGET_DIR}"
     )
 endif()
 
-# Installation
-install(TARGETS moq_cpp moq_mgr
+# Set library properties
+set_target_properties(moq-cpp PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 0
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# Google C++ Style Guide compliance
+target_compile_options(moq-cpp PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
+    $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Wpedantic>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
+
+# Install targets
+install(TARGETS moq-cpp
+    EXPORT moq-cpp-targets
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
-# Install C++ wrapper headers
-install(DIRECTORY moq-cpp/include/
-    DESTINATION include
-    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+install(DIRECTORY cpp/include/ DESTINATION include)
+
+# Export package
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    "moq-cpp-config.cmake.in"
+    "moq-cpp-config.cmake"
+    INSTALL_DESTINATION lib/cmake/moq-cpp
 )
 
-# Install MOQ Manager headers
-install(DIRECTORY moq-mgr/include/
-    DESTINATION include
-    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+write_basic_package_version_file(
+    "moq-cpp-config-version.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
 )
 
-# Install FFI header
-install(FILES moq-ffi/include/moq_ffi.h
-    DESTINATION include
+install(EXPORT moq-cpp-targets
+    FILE moq-cpp-targets.cmake
+    DESTINATION lib/cmake/moq-cpp
 )
 
-# Install Rust library
-install(FILES ${RUST_LIB_DIR}/${RUST_LIB_NAME}
-    DESTINATION lib
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/moq-cpp-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/moq-cpp-config-version.cmake"
+    DESTINATION lib/cmake/moq-cpp
 )
 
+# Examples (optional)
+if(BUILD_EXAMPLES)
+    # Clock publisher example
+    add_executable(clock_publisher_cpp
+        examples/clock_publisher.cpp
+    )
+    target_link_libraries(clock_publisher_cpp PRIVATE moq-cpp)
+    target_include_directories(clock_publisher_cpp PRIVATE cpp/include)
+
+    # Clock subscriber example  
+    add_executable(clock_subscriber_cpp
+        examples/clock_subscriber.cpp
+    )
+    target_link_libraries(clock_subscriber_cpp PRIVATE moq-cpp)
+    target_include_directories(clock_subscriber_cpp PRIVATE cpp/include)
+
+    # Set RPATH for examples to find libraries
+    if(APPLE)
+        set_target_properties(clock_publisher_cpp clock_subscriber_cpp PROPERTIES
+            BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR};${RUST_TARGET_DIR}"
+            INSTALL_RPATH "@executable_path/../lib"
+        )
+    elseif(UNIX)
+        set_target_properties(clock_publisher_cpp clock_subscriber_cpp PROPERTIES
+            BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR};${RUST_TARGET_DIR}"
+            INSTALL_RPATH "$ORIGIN/../lib"
+        )
+    endif()
+
+    # Install examples
+    install(TARGETS clock_publisher_cpp clock_subscriber_cpp
+        RUNTIME DESTINATION bin/examples
+    )
+endif()
+
+# Copy Rust library to output directory for runtime
+add_custom_command(TARGET moq-cpp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${RUST_LIB_PATH}
+        $<TARGET_FILE_DIR:moq-cpp>
+    COMMENT "Copying Rust library to output directory"
+)
+
+# Copy libraries for examples if they're built
+if(BUILD_EXAMPLES)
+    add_custom_command(TARGET clock_publisher_cpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${RUST_LIB_PATH}
+            $<TARGET_FILE_DIR:clock_publisher_cpp>
+        COMMENT "Copying Rust library for publisher example"
+    )
+    add_custom_command(TARGET clock_subscriber_cpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${RUST_LIB_PATH}
+            $<TARGET_FILE_DIR:clock_subscriber_cpp>
+        COMMENT "Copying Rust library for subscriber example"
+    )
+endif()

@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/moq-cpp-targets.cmake")
+
+# Provide imported target
+if(NOT TARGET moq-cpp::moq-cpp)
+    add_library(moq-cpp::moq-cpp ALIAS moq-cpp)
+endif()
+
+check_required_components(moq-cpp)

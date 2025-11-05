@@ -1,1027 +1,410 @@
-# MOQ C++ API
+# MOQ Wrapper Project
 
-A modern C++ wrapper around the [moq-native](https://github.com/kixelated/moq-rs) Rust library for **Media over QUIC (MOQ)** applications. This library provides a clean, type-safe C++ interface for real-time media streaming using the MOQ protocol.
+A comprehensive wrapper library for MOQ (Media over QUIC) with automatic reconnection and simplified APIs for both Rust and C++.
 
-## What is MOQ?
-
-Media over QUIC (MOQ) is a live media delivery protocol that leverages QUIC's advantages:
-- **Low latency**: Stream media with minimal delay
-- **Connection multiplexing**: Multiple streams over single connection  
-- **Built-in reliability**: Automatic retransmission and congestion control
-- **Modern security**: TLS 1.3 encryption by default
-
-## Key Features
-
-- 🚀 **Modern C++17** interface with RAII and smart pointers
-- 🔧 **Cross-platform**: Windows, macOS, and Linux support
-- 📦 **Easy integration** via CMake
-- 🛡️ **Memory safe** Rust backend with C++ convenience
-- 🔄 **Producer/Consumer** pattern for streaming data
-- 📊 **Hierarchical data** organization (Broadcasts → Tracks → Groups → Frames)
-
-## Quick Start
-
-```cpp
-#include <moq/moq.h>
-
-int main() {
-    // Initialize the library
-    moq::Client::initialize();
-    
-    // Create and configure client
-    moq::ClientConfig config;
-    config.bind_addr = "0.0.0.0:0";  // IPv4
-    config.tls_disable_verify = true; // For testing
-    
-    auto client = moq::Client::create(config);
-    auto session = client->connect("https://relay.moq.example.com:4433");
-    
-    if (session) {
-        std::cout << "Connected to MOQ relay!" << std::endl;
-        // Now you can publish or subscribe to streams
-    }
-    
-    return 0;
-}
-
-## Overview
-
-This project provides:
-- **Rust FFI layer** (`moq-ffi`): C-compatible interface around moq-native
-- **C++ wrapper** (`cpp/`): C++ classes and RAII semantics
-- **CMake build system**: Easy integration into C++ projects
-- **Examples**: Sample code demonstrating usage
-
-## MOQ Concepts
-
-### Data Hierarchy
-
-MOQ organizes data in a hierarchical structure:
+## Project Structure
 
 ```
-Broadcast
-  └── Track (named stream within broadcast)
-      └── Group (sequence of related frames)
-          └── Frame (individual data packet)
+/
+├── src/                    # Rust source code
+│   ├── lib.rs             # Simplified public API
+│   ├── session.rs         # Session management with auto-reconnection
+│   ├── subscription.rs    # Resilient subscription handling
+│   ├── catalog.rs         # Catalog management
+│   ├── track.rs          # Track management
+│   ├── config.rs         # Configuration types
+│   └── ffi.rs            # Foreign Function Interface (C API)
+├── cpp/                   # C++ wrapper
+│   ├── include/           # C++ headers
+│   │   └── moq_wrapper.h
+│   ├── src/              # C++ implementation
+│   │   └── moq_wrapper.cpp
+│   └── README.md         # C++ specific documentation
+├── examples/              # Example applications
+│   ├── clock_example.rs      # Rust clock example with robust error handling
+│   ├── hang_subscriber.rs    # Rust hang subscriber
+│   ├── clock_publisher.cpp   # C++ clock publisher
+│   └── clock_subscriber.cpp  # C++ clock subscriber
+├── tests/                 # Test files
+├── CMakeLists.txt        # C++ build configuration
+└── Cargo.toml           # Rust build configuration
 ```
-
-**Broadcast**: A collection of related tracks (e.g., "clock" broadcast)
-**Track**: A named stream within a broadcast (e.g., "seconds" track)  
-**Group**: A sequence number-ordered collection of frames (e.g., data for one minute)
-**Frame**: Individual data packets within a group (e.g., each second update)
-
-### Producer/Consumer Pattern
-
-- **Producer**: Publishes data to tracks using `BroadcastProducer` → `TrackProducer` → `GroupProducer`
-- **Consumer**: Subscribes to tracks using `BroadcastConsumer` → `TrackConsumer` → `GroupConsumer`
-
-### Sequence Ordering
-
-- **Groups** are identified by sequence numbers for ordered delivery
-- **Frames** within a group maintain their order
-- Consumers can process groups as they arrive or wait for specific sequence numbers
-
-## Threading Strategy
-
-### Overview
-
-The MOQ C++ API provides a **blocking interface** over an **asynchronous Rust backend**. Understanding this design is crucial for proper usage:
-
-- **Rust Layer**: Uses Tokio async runtime for all network operations
-- **C++ Layer**: Provides synchronous, blocking methods that internally await async operations
-- **Thread Safety**: The API is **not thread-safe** - external synchronization is required
-
-### Key Threading Principles
-
-#### 1. **One Operation Per Object**
-```cpp
-// ❌ BAD: Concurrent operations on same object
-auto group = track->nextGroup();  // Thread 1
-auto frame = group->readFrame();  // Thread 2 - UNSAFE!
-
-// ✅ GOOD: Sequential operations
-auto group = track->nextGroup();
-auto frame = group->readFrame();
-```
-
-#### 2. **Blocking Operations**
-All MOQ operations are **blocking** and will wait for network I/O:
-```cpp
-// These calls block until data is available or connection fails
-auto group = trackConsumer->nextGroup();      // Waits for next group
-auto frame = groupConsumer->readFrame();      // Waits for next frame
-auto session = client->connect(url);          // Waits for connection
-```
-
-#### 3. **No Internal Threading**
-The C++ wrapper does **not** create background threads. All async work happens in the Rust Tokio runtime, but C++ calls are synchronous.
-
-### Recommended Patterns
-
-#### Pattern 1: **Single-Threaded Consumer**
-```cpp
-void consumeTrack(std::unique_ptr<moq::TrackConsumer> track) {
-    while (true) {
-        auto group = track->nextGroup();  // Blocks until available
-        if (!group) break;  // Connection closed
-        
-        while (true) {
-            auto frame = group->readFrame();  // Blocks until available
-            if (!frame) break;  // No more frames in group
-            
-            processFrame(*frame);  // Your processing logic
-        }
-    }
-}
-```
-
-#### Pattern 2: **Multi-Threaded with External Synchronization**
-```cpp
-class ThreadSafeConsumer {
-private:
-    std::unique_ptr<moq::TrackConsumer> track_;
-    std::mutex track_mutex_;
-    std::queue<std::vector<uint8_t>> frame_queue_;
-    std::mutex queue_mutex_;
-    std::condition_variable cv_;
-    std::atomic<bool> stop_{false};
-
-public:
-    void startConsumerThread() {
-        std::thread([this]() {
-            while (!stop_) {
-                std::unique_ptr<moq::GroupConsumer> group;
-                {
-                    std::lock_guard<std::mutex> lock(track_mutex_);
-                    group = track_->nextGroup();  // Blocks
-                }
-                
-                if (!group) break;
-                
-                while (!stop_) {
-                    auto frame = group->readFrame();  // Blocks
-                    if (!frame) break;
-                    
-                    // Add to thread-safe queue
-                    {
-                        std::lock_guard<std::mutex> lock(queue_mutex_);
-                        frame_queue_.push(std::move(*frame));
-                    }
-                    cv_.notify_one();
-                }
-            }
-        }).detach();
-    }
-    
-    std::optional<std::vector<uint8_t>> getFrame() {
-        std::unique_lock<std::mutex> lock(queue_mutex_);
-        cv_.wait(lock, [this]() { return !frame_queue_.empty() || stop_; });
-        
-        if (frame_queue_.empty()) return std::nullopt;
-        
-        auto frame = std::move(frame_queue_.front());
-        frame_queue_.pop();
-        return frame;
-    }
-};
-```
-
-#### Pattern 3: **Producer with Background Publishing**
-```cpp
-class AsyncProducer {
-private:
-    std::unique_ptr<moq::TrackProducer> track_;
-    std::queue<std::vector<uint8_t>> send_queue_;
-    std::mutex queue_mutex_;
-    std::condition_variable cv_;
-    std::atomic<bool> stop_{false};
-
-public:
-    void startPublisherThread() {
-        std::thread([this]() {
-            uint64_t sequence = 0;
-            
-            while (!stop_) {
-                auto group = track_->createGroup(sequence++);
-                
-                // Send all queued data in this group
-                while (!stop_) {
-                    std::vector<uint8_t> data;
-                    {
-                        std::unique_lock<std::mutex> lock(queue_mutex_);
-                        cv_.wait_for(lock, std::chrono::milliseconds(100), 
-                                   [this]() { return !send_queue_.empty() || stop_; });
-                        
-                        if (send_queue_.empty()) break;  // No data, end group
-                        
-                        data = std::move(send_queue_.front());
-                        send_queue_.pop();
-                    }
-                    
-                    if (!group->writeFrame(data)) break;  // Write failed
-                }
-                
-                group->finish();  // Complete the group
-            }
-        }).detach();
-    }
-    
-    void queueFrame(const std::vector<uint8_t>& data) {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
-        send_queue_.push(data);
-        cv_.notify_one();
-    }
-};
-```
-
-### Threading Best Practices
-
-#### ✅ **DO:**
-- Use external synchronization (mutexes, atomics) for multi-threading
-- Handle blocking operations appropriately (they may wait indefinitely)
-- Check return values - `nullptr`/`nullopt` indicates connection closed or error
-- Use separate threads for producers and consumers when needed
-- Design your threading model around the blocking nature of operations
-
-#### ❌ **DON'T:**
-- Call methods on the same object from multiple threads simultaneously
-- Assume operations are non-blocking or have timeouts
-- Rely on the API for internal thread management
-- Mix sync/async patterns - stick to the blocking model
-
-### Error Handling in Multi-Threaded Context
-
-```cpp
-void robustConsumer() {
-    try {
-        while (true) {
-            auto group = track_->nextGroup();
-            if (!group) {
-                // Connection closed gracefully
-                break;
-            }
-            
-            while (true) {
-                auto frame = group->readFrame();
-                if (!frame) {
-                    // End of group, not an error
-                    break;
-                }
-                
-                if (!processFrame(*frame)) {
-                    // Processing error, decide whether to continue
-                    continue;  // or break, depending on your needs
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        // Handle connection errors
-        std::cerr << "Consumer error: " << e.what() << std::endl;
-        // Implement reconnection logic if needed
-    }
-}
-```
-
-### Performance Considerations
-
-- **Blocking Calls**: Operations block until network I/O completes
-- **No Timeouts**: Operations may wait indefinitely - implement application-level timeouts if needed
-- **Memory Management**: Objects use RAII - no manual cleanup required
-- **Network Buffering**: The Rust backend handles buffering and flow control
-
-## Architecture
-
-```
-┌─────────────────────┐
-│   C++ Application   │
-├─────────────────────┤
-│   C++ Wrapper       │  <- moq::Client, moq::Session classes
-├─────────────────────┤
-│   C FFI Layer       │  <- moq_client_new, moq_client_connect, etc.
-├─────────────────────┤
-│   Rust moq-native   │  <- Original moq-native library
-└─────────────────────┘
-```
-
-## Prerequisites
-
-- **Rust**: Install from [rustup.rs](https://rustup.rs/)
-- **CMake**: Version 3.16 or later
-- **C++ Compiler**: Supporting C++17 or later
-- **Git**: For cloning dependencies
-
-### Platform-specific requirements
-
-#### macOS
-```bash
-# Install Xcode command line tools
-xcode-select --install
-```
-
-#### Linux (Ubuntu/Debian)
-```bash
-sudo apt update
-sudo apt install build-essential cmake git curl
-```
-
-#### Windows
-- Visual Studio 2019 or later with C++ support
-- Or MinGW-w64 with MSYS2
 
 ## Building
 
-#### Continuous Integration
+### Rust Library
 
-The project includes a CI/CD pipeline using GitHub Actions:
-
-- **Multi-platform builds**: Tests on Ubuntu, macOS, and Windows
-- **Rust toolchain**: Automatic installation and caching
-- **Code quality**: Formatting checks, linting with Clippy
-- **Build verification**: Compiles and runs the example application
-
-The CI pipeline automatically:
-1. Installs dependencies (Rust, CMake, Ninja)
-2. Caches Rust dependencies for faster builds
-3. Builds the project in release mode
-4. Runs the example to verify functionality
-5. Checks Rust code formatting and linting
-
-## Quick Start
+The Rust library supports both regular library usage and FFI exports:
 
 ```bash
-# Clone the repository
-git clone <your-repo-url> moq-c-api
-cd moq-c-api
+# Build as regular Rust library
+cargo build --release
 
+# Build with FFI exports (creates libmoq_wrapper.dylib/.so/.dll)
+cargo build --release --features ffi
+```
+
+### C++ Library (moq-cpp)
+
+The C++ library wraps the Rust FFI and provides a modern C++ API:
+
+```bash
 # Create build directory
 mkdir build && cd build
 
-# Configure and build
-cmake ..
-make -j$(nproc)
+# Configure (examples disabled by default)
+cmake .. -DCMAKE_BUILD_TYPE=Release
 
-# Run the example
-./moq_example
+# Build library only
+cmake --build .
+
+# Build with examples
+cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
+cmake --build .
+
+# Install
+cmake --install . --prefix /usr/local
 ```
 
-### Detailed Build Process
+## Quick Start
 
-1. **Configure the build**:
-   ```bash
-   cmake -B build -DCMAKE_BUILD_TYPE=Release
-   ```
+### Rust API - Simplified Interface
 
-2. **Build the project**:
-   ```bash
-   cmake --build build --parallel
-   ```
+```rust
+use moq_wrapper::{init, create_publisher, create_subscriber, write_frame, TrackDefinition, Level};
 
-3. **Install (optional)**:
-   ```bash
-   cmake --install build --prefix /usr/local
-   ```
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize with logging
+    init(Level::INFO, None);
+    
+    // Create publisher with track definitions
+    let tracks = vec![
+        TrackDefinition::data("seconds", 0), // Simple data track
+    ];
+    
+    let session = create_publisher(
+        "https://relay1.moq.sesame-streams.com:4433",
+        "my-broadcast",
+        tracks,
+        CatalogType::None  // No catalog needed for simple use cases
+    ).await?;
+    
+    // No manual connection waiting needed - session handles everything automatically
+    
+    // Write data with automatic group management
+    write_frame(&session, "seconds", "2024-11-05 12:00:00".into(), true).await?; // new_group=true
+    write_frame(&session, "seconds", "30".into(), false).await?; // add to current group
+    
+    // All errors are handled gracefully - no need for manual reconnection logic
+    
+    Ok(())
+}
+```
 
-## Complete Examples
-
-### Clock Publisher (Real-time Timestamp Streaming)
+### C++ API - Clean Interface
 
 ```cpp
-#include <moq/moq.h>
+#include "moq_wrapper.h"
 #include <iostream>
-#include <chrono>
-#include <thread>
 
-class ClockPublisher {
-private:
-    std::unique_ptr<moq::TrackProducer> track_;
-
-public:
-    ClockPublisher(std::unique_ptr<moq::TrackProducer> track) 
-        : track_(std::move(track)) {}
-
-    void run() {
-        uint64_t sequence = 0;
+int main() {
+    // Initialize with logging
+    moq::Init(moq::LogLevel::kInfo);
+    
+    // Create publisher with simple track definition
+    std::vector<moq::TrackDefinition> tracks;
+    tracks.emplace_back("seconds", 0, moq::TrackType::kData);
+    
+    auto session = moq::Session::CreatePublisher(
+        "https://relay1.moq.sesame-streams.com:4433",
+        "my-broadcast",
+        tracks,
+        moq::CatalogType::kNone
+    );
+    
+    if (session) {
+        // Write data - session handles connection automatically
+        std::string time_data = "2024-11-05 12:00:00";
+        session->WriteFrame("seconds", time_data.data(), time_data.size(), true); // new_group=true
         
-        while (true) {
-            // Create group for this timestamp
-            auto group = track_->createGroup(sequence++);
-            
-            // Get current time
-            auto now = std::chrono::system_clock::now();
-            auto time_t = std::chrono::system_clock::to_time_t(now);
-            std::string timestamp = std::ctime(&time_t);
-            
-            // Send timestamp
-            group->writeFrame(timestamp);
-            group->finish();
-            
-            std::cout << "Published: " << timestamp;
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-    }
-};
-
-int main() {
-    // Initialize and connect
-    moq::Client::initialize();
-    
-    moq::ClientConfig config;
-    config.bind_addr = "0.0.0.0:0";
-    config.tls_disable_verify = true;
-    
-    auto client = moq::Client::create(config);
-    auto session = client->connect("https://relay.moq.example.com:4433");
-    
-    if (!session) {
-        std::cerr << "Failed to connect" << std::endl;
-        return 1;
-    }
-    
-    // Set up publishing
-    moq::Track track = {"seconds", 0};
-    auto broadcast = std::make_shared<moq::BroadcastProducer>();
-    auto track_producer = broadcast->createTrack(track);
-    
-    session->publish("clock", broadcast->getConsumable());
-    
-    // Start publishing
-    ClockPublisher publisher(std::move(track_producer));
-    publisher.run();
-    
-    return 0;
-}
-```
-
-### Clock Subscriber (Receiving Timestamps)
-
-```cpp
-#include <moq/moq.h>
-#include <iostream>
-
-class ClockSubscriber {
-private:
-    std::unique_ptr<moq::TrackConsumer> track_;
-
-public:
-    ClockSubscriber(std::unique_ptr<moq::TrackConsumer> track) 
-        : track_(std::move(track)) {}
-
-    void run() {
-        while (true) {
-            // Wait for next group
-            auto group_future = track_->nextGroup();
-            auto group = group_future.get();
-            
-            if (!group) {
-                std::cout << "Stream ended" << std::endl;
-                break;
-            }
-            
-            // Read all frames from group
-            while (true) {
-                auto frame_future = group->readFrame();
-                auto frame_data = frame_future.get();
-                
-                if (!frame_data) break; // No more frames
-                
-                std::string timestamp(frame_data->begin(), frame_data->end());
-                std::cout << "Received: " << timestamp;
-            }
-        }
-    }
-};
-
-int main() {
-    // Initialize and connect  
-    moq::Client::initialize();
-    
-    moq::ClientConfig config;
-    config.bind_addr = "0.0.0.0:0";
-    config.tls_disable_verify = true;
-    
-    auto client = moq::Client::create(config);
-    auto session = client->connect("https://relay.moq.example.com:4433");
-    
-    if (!session) {
-        std::cerr << "Failed to connect" << std::endl;
-        return 1;
-    }
-    
-    // Set up subscription
-    moq::Track track = {"seconds", 0};
-    auto broadcast_consumer = session->consume("clock");
-    auto track_consumer = broadcast_consumer->subscribeTrack(track);
-    
-    // Start consuming
-    ClockSubscriber subscriber(std::move(track_consumer));
-    subscriber.run();
-    
-    return 0;
-}
-```
-
-### Multi-Track Broadcast (Video + Audio + Metadata)
-
-```cpp
-#include <moq/moq.h>
-#include <iostream>
-#include <thread>
-
-class MultiTrackPublisher {
-private:
-    std::unique_ptr<moq::TrackProducer> video_track_;
-    std::unique_ptr<moq::TrackProducer> audio_track_;
-    std::unique_ptr<moq::TrackProducer> metadata_track_;
-
-public:
-    MultiTrackPublisher(std::unique_ptr<moq::TrackProducer> video,
-                       std::unique_ptr<moq::TrackProducer> audio,
-                       std::unique_ptr<moq::TrackProducer> metadata)
-        : video_track_(std::move(video))
-        , audio_track_(std::move(audio)) 
-        , metadata_track_(std::move(metadata)) {}
-
-    void run() {
-        uint64_t sequence = 0;
+        std::string seconds_data = "30";
+        session->WriteFrame("seconds", seconds_data.data(), seconds_data.size(), false); // add to group
         
-        while (true) {
-            // Publish video frame
-            auto video_group = video_track_->createGroup(sequence);
-            video_group->writeFrame("video_frame_data_" + std::to_string(sequence));
-            video_group->finish();
-            
-            // Publish audio frame  
-            auto audio_group = audio_track_->createGroup(sequence);
-            audio_group->writeFrame("audio_sample_data_" + std::to_string(sequence));
-            audio_group->finish();
-            
-            // Publish metadata (every 10th frame)
-            if (sequence % 10 == 0) {
-                auto meta_group = metadata_track_->createGroup(sequence / 10);
-                meta_group->writeFrame("timestamp=" + std::to_string(sequence));
-                meta_group->writeFrame("resolution=1920x1080");
-                meta_group->finish();
-            }
-            
-            std::cout << "Published frame " << sequence << std::endl;
-            sequence++;
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
-        }
+        std::cout << "Data published successfully" << std::endl;
     }
-};
-
-int main() {
-    moq::Client::initialize();
-    
-    moq::ClientConfig config;
-    config.bind_addr = "0.0.0.0:0";
-    config.tls_disable_verify = true;
-    
-    auto client = moq::Client::create(config);
-    auto session = client->connect("https://relay.moq.example.com:4433");
-    
-    // Create tracks with different priorities
-    moq::Track video_track = {"video", 0};      // Highest priority
-    moq::Track audio_track = {"audio", 1};      // Medium priority  
-    moq::Track metadata_track = {"metadata", 2}; // Lowest priority
-    
-    auto broadcast = std::make_shared<moq::BroadcastProducer>();
-    auto video_producer = broadcast->createTrack(video_track);
-    auto audio_producer = broadcast->createTrack(audio_track);
-    auto metadata_producer = broadcast->createTrack(metadata_track);
-    
-    session->publish("live-stream", broadcast->getConsumable());
-    
-    MultiTrackPublisher publisher(std::move(video_producer),
-                                 std::move(audio_producer), 
-                                 std::move(metadata_producer));
-    publisher.run();
     
     return 0;
 }
 ```
 
-## Threading Quick Reference
+## Features
 
-### ⚡ **Key Points**
-- **All operations are BLOCKING** - they wait for network I/O
-- **NOT thread-safe** - use external synchronization for multi-threading
-- **No timeouts** - operations may wait indefinitely
-- **RAII cleanup** - objects auto-cleanup when destroyed
+### Core Features
+- **Automatic Reconnection**: Infinite reconnection attempts with exponential backoff - never gives up
+- **Simplified API**: Just two main functions - `write_frame()` and `write_single_frame()`
+- **Bulletproof Error Handling**: All operations handle network interruptions gracefully
+- **Zero Manual Connection Management**: No need to check connection status or implement reconnection logic
+- **Track Auto-Creation**: Track producers are automatically created and managed
+- **Session-Level Resilience**: Applications continue running even during network outages
 
-### 📋 **Threading Checklist**
+### Rust Features  
+- **Async/Await**: Full async support with Tokio runtime
+- **Graceful Degradation**: Operations fail gracefully during reconnection, resume automatically
+- **Clean API**: `write_frame(session, track, data, new_group)` - that's it!
+- **Type Safety**: Strong typing for all MOQ concepts
+- **Production Ready**: Used in real-world applications with network instability
 
-**Before implementing multi-threading:**
-- [ ] Do I need multiple threads? (Single-threaded is often simpler)
-- [ ] How will I synchronize access to MOQ objects?
-- [ ] How will I handle blocking operations?
-- [ ] How will I detect and handle connection failures?
+### C++ Features
+- **Modern C++17**: RAII, smart pointers, and Google style guidelines  
+- **Simplified Interface**: `WriteFrame(track, data, size, new_group)` and `WriteSingleFrame(track, data, size)`
+- **Automatic Resource Management**: No manual cleanup needed
+- **Cross-Platform**: Supports Windows, macOS, and Linux
+- **Thread Safe**: Safe to use from multiple threads
 
-**For each MOQ object:**
-- [ ] Only one thread calls methods at a time
-- [ ] Proper mutex protection if shared between threads
-- [ ] Error handling for connection failures
-- [ ] Graceful shutdown mechanism
+### Automatic Features (No Code Required)
+- ✅ **Connection establishment and management**
+- ✅ **Track producer creation and recreation**  
+- ✅ **Group management and cleanup**
+- ✅ **Catalog publishing (when configured)**
+- ✅ **Network interruption handling**
+- ✅ **State synchronization after reconnection**
 
-### 🔄 **Common Patterns**
+## Examples
 
-| Pattern | Use Case | Complexity |
-|---------|----------|------------|
-| **Single-threaded** | Simple consumers/producers | ⭐ Low |
-| **Producer + Consumer threads** | Separate read/write logic | ⭐⭐ Medium |
-| **Thread pool** | Multiple parallel streams | ⭐⭐⭐ High |
-| **Async wrapper** | Non-blocking interface | ⭐⭐⭐⭐ Very High |
-
-### 🚨 **Common Mistakes**
-```cpp
-// ❌ Multiple threads, same object
-std::thread t1([&]() { consumer->nextGroup(); });
-std::thread t2([&]() { consumer->nextGroup(); });  // RACE CONDITION!
-
-// ❌ No error handling
-auto frame = group->readFrame();  // May return nullopt!
-processFrame(*frame);  // CRASH if connection closed!
-
-// ✅ Correct approach
-std::mutex consumer_mutex;
-std::thread t1([&]() {
-    std::lock_guard<std::mutex> lock(consumer_mutex);
-    auto group = consumer->nextGroup();
-    if (group) {
-        auto frame = group->readFrame();
-        if (frame) {
-            processFrame(*frame);
-        }
-    }
-});
-```
-
-## API Reference
-
-### Core Classes
-
-#### `moq::Client`
-Main entry point for MOQ connections. Manages the underlying QUIC client.
-
-```cpp
-class Client {
-public:
-    // Static initialization (call once per process)
-    static Result initialize();
-    
-    // Factory method to create client instances
-    static std::unique_ptr<Client> create(const ClientConfig& config);
-    
-    // Connect to a MOQ relay server
-    std::unique_ptr<Session> connect(const std::string& url);
-    
-    // Get detailed error information
-    std::string getLastError() const;
-    
-    // Convert result codes to human-readable strings
-    static std::string resultToString(Result result);
-};
-```
-
-**Usage Example:**
-```cpp
-// Initialize once per process
-auto result = moq::Client::initialize();
-if (result != moq::Result::Success) {
-    std::cerr << "Init failed: " << moq::Client::resultToString(result) << std::endl;
-}
-
-// Create client instance
-moq::ClientConfig config;
-config.bind_addr = "0.0.0.0:0";
-config.tls_disable_verify = true;
-
-auto client = moq::Client::create(config);
-auto session = client->connect("https://relay.example.com:4433");
-```
-
-#### `moq::Session`
-Represents an active connection to a MOQ relay server. Used for publishing and subscribing to broadcasts.
-
-```cpp
-class Session {
-public:
-    // Check connection status
-    bool isConnected() const;
-    
-    // Gracefully close the connection
-    void close();
-    
-    // Publish a broadcast (for producers)
-    bool publish(const std::string& broadcast_name, 
-                std::shared_ptr<BroadcastConsumer> consumable);
-    
-    // Subscribe to a broadcast (for consumers)
-    std::unique_ptr<BroadcastConsumer> consume(const std::string& broadcast_name);
-};
-```
-
-#### `moq::ClientConfig`
-Configuration options for MOQ clients.
-
-```cpp
-struct ClientConfig {
-    std::string bind_addr = "[::]:0";           // Local bind address
-    bool tls_disable_verify = false;            // Disable TLS verification
-    std::string tls_root_cert_path = "";        // Custom root certificate
-};
-```
-
-**Configuration Examples:**
-```cpp
-// IPv4 configuration
-moq::ClientConfig config_v4;
-config_v4.bind_addr = "0.0.0.0:0";
-
-// IPv6 configuration  
-moq::ClientConfig config_v6;
-config_v6.bind_addr = "[::]:0";
-
-// Custom certificate
-moq::ClientConfig config_cert;
-config_cert.tls_root_cert_path = "/path/to/ca-cert.pem";
-```
-
-### Broadcasting API
-
-#### `moq::BroadcastProducer`
-Manages the publication of multiple tracks within a single broadcast namespace.
-
-```cpp
-class BroadcastProducer {
-public:
-    BroadcastProducer();
-    ~BroadcastProducer();
-    
-    // Create a track producer for publishing data
-    std::unique_ptr<TrackProducer> createTrack(const Track& track);
-    
-    // Get consumable interface for session publishing
-    std::shared_ptr<BroadcastConsumer> getConsumable();
-};
-```
-
-#### `moq::BroadcastConsumer`  
-Manages subscription to multiple tracks within a broadcast.
-
-```cpp
-class BroadcastConsumer {
-public:
-    ~BroadcastConsumer();
-    
-    // Subscribe to a specific track within the broadcast
-    std::unique_ptr<TrackConsumer> subscribeTrack(const Track& track);
-};
-```
-
-**Broadcasting Example:**
-```cpp
-// Producer side
-auto broadcast = std::make_shared<moq::BroadcastProducer>();
-auto track_producer = broadcast->createTrack({"video", 0});
-session->publish("my-stream", broadcast->getConsumable());
-
-// Consumer side  
-auto broadcast_consumer = session->consume("my-stream");
-auto track_consumer = broadcast_consumer->subscribeTrack({"video", 0});
-```
-
-### Track API
-
-#### `moq::Track`
-Metadata describing a track within a broadcast.
-
-```cpp
-struct Track {
-    std::string name;    // Track identifier (e.g., "video", "audio", "metadata")
-    uint8_t priority;    // Delivery priority (0 = highest priority)
-};
-```
-
-#### `moq::TrackProducer`
-Publishes sequential groups of data to a track.
-
-```cpp
-class TrackProducer {
-public:
-    ~TrackProducer();
-    
-    // Create a new group with given sequence number
-    std::unique_ptr<GroupProducer> createGroup(uint64_t sequence);
-};
-```
-
-#### `moq::TrackConsumer`
-Consumes sequential groups of data from a track.
-
-```cpp
-class TrackConsumer {
-public:
-    ~TrackConsumer();
-    
-    // Asynchronously receive the next group
-    std::future<std::unique_ptr<GroupConsumer>> nextGroup();
-};
-```
-
-**Track Example:**
-```cpp
-// Define track metadata
-moq::Track video_track = {"video", 0};      // High priority video
-moq::Track audio_track = {"audio", 1};      // Lower priority audio
-moq::Track metadata_track = {"metadata", 2}; // Lowest priority metadata
-
-// Producer: Create groups with sequence numbers
-auto group = track_producer->createGroup(42);
-
-// Consumer: Process groups as they arrive
-auto group_future = track_consumer->nextGroup();
-auto group = group_future.get(); // Blocks until group arrives
-```
-
-### Group API
-
-#### `moq::GroupProducer`
-Publishes frames of data within a sequenced group.
-
-```cpp
-class GroupProducer {
-public:
-    ~GroupProducer();
-    
-    // Write frame data in different formats
-    bool writeFrame(const std::vector<uint8_t>& data);
-    bool writeFrame(const std::string& data);  
-    bool writeFrame(const uint8_t* data, size_t size);
-    
-    // Signal end of group (required)
-    void finish();
-};
-```
-
-#### `moq::GroupConsumer`
-Consumes frames of data within a received group.
-
-```cpp
-class GroupConsumer {
-public:
-    ~GroupConsumer();
-    
-    // Asynchronously read next frame from group
-    std::future<std::optional<std::vector<uint8_t>>> readFrame();
-};
-```
-
-**Group/Frame Example:**
-```cpp
-// Producer: Send multiple frames per group
-auto group = track_producer->createGroup(sequence++);
-
-group->writeFrame("Frame Header");
-group->writeFrame(binary_data);
-group->writeFrame(metadata_json);
-group->finish(); // Always call finish()
-
-// Consumer: Read all frames from group
-while (true) {
-    auto frame_future = group->readFrame();
-    auto frame_data = frame_future.get();
-    
-    if (!frame_data) break; // No more frames
-    
-    // Process frame data
-    processFrame(*frame_data);
-}
-```
-
-### Error Handling
-
-#### `moq::Result`
-Enumeration for operation results.
-
-```cpp
-enum class Result {
-    Success = 0,         // Operation completed successfully
-    InvalidArgument = 1, // Invalid input parameters  
-    NetworkError = 2,    // Network connectivity issues
-    TlsError = 3,        // TLS/SSL certificate problems
-    DnsError = 4,        // DNS resolution failures
-    GeneralError = 5     // Other unspecified errors
-};
-```
-
-**Error Handling Patterns:**
-```cpp
-// Check initialization result
-auto result = moq::Client::initialize();
-if (result != moq::Result::Success) {
-    std::cerr << "Failed to initialize: " 
-              << moq::Client::resultToString(result) << std::endl;
-    return -1;
-}
-
-// Check connection result
-auto session = client->connect(url);
-if (!session) {
-    std::cerr << "Connection failed: " << client->getLastError() << std::endl;
-    return -1;
-}
-
-// Check publishing result
-if (!session->publish(broadcast_name, producer)) {
-    std::cerr << "Failed to publish broadcast" << std::endl;
-}
-```
-
-## Development
-
-### Project Structure
-
-```
-moq-c-api/
-├── Cargo.toml              # Rust workspace configuration
-├── CMakeLists.txt          # Main CMake configuration
-├── moq-ffi/                # Rust FFI crate
-│   ├── Cargo.toml
-│   ├── build.rs            # cbindgen integration
-│   └── src/
-│       └── lib.rs          # C FFI implementation
-├── cpp/                    # C++ wrapper
-│   ├── include/moq/        # Public headers
-│   └── src/                # Implementation
-├── examples/               # Example applications
-│   └── cpp/
-└── README.md
-```
-
-### Building for Development
-
-For development, you may want to build in debug mode:
+### Running Rust Examples
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+# Clock publisher (with automatic reconnection)
+cargo run --example clock_example -- \
+  --url https://relay1.moq.sesame-streams.com:4433 \
+  --broadcast my-clock \
+  publish
+
+# Clock subscriber (resilient to publisher disconnections)
+cargo run --example clock_example -- \
+  --url https://relay1.moq.sesame-streams.com:4433 \
+  --broadcast my-clock \
+  subscribe
+
+# Hang subscriber  
+cargo run --example hang_subscriber \
+  --url https://relay1.moq.sesame-streams.com:4433 \
+  --broadcast hang-broadcast
 ```
 
-### Running Tests
+### Running C++ Examples
 
 ```bash
-# Build and run Rust tests
-cd moq-ffi && cargo test
+# Build examples first
+cmake .. -DBUILD_EXAMPLES=ON
+cmake --build .
 
-# Build and run C++ tests (if implemented)
-cd build && ctest
+# Clock publisher (automatically handles reconnection)
+./clock_publisher_cpp https://relay1.moq.sesame-streams.com:4433 my-clock
+
+# Clock subscriber (resilient to network issues)
+./clock_subscriber_cpp https://relay1.moq.sesame-streams.com:4433 my-clock
 ```
+
+### Example Error Handling
+
+The examples demonstrate robust error handling:
+
+```rust
+// Operations gracefully handle network issues
+match write_frame(&session, "data", payload, true).await {
+    Ok(_) => println!("Data sent successfully"),
+    Err(e) => {
+        // This just logs a warning and continues - no need to exit!
+        warn!("Failed to send data (will retry): {}", e);
+    }
+}
+```
+
+## Configuration
+
+### CMake Options
+
+- `BUILD_EXAMPLES`: Build C++ examples (default: OFF)
+- `CMAKE_BUILD_TYPE`: Build type (Debug/Release)
+
+### Rust Features
+
+The Rust library automatically builds with FFI support when building the CMake project.
+
+## Dependencies
+
+### Rust Dependencies
+- `moq-lite`: Core MOQ protocol implementation
+- `moq-native`: Native MOQ implementation with QUIC
+- `tokio`: Async runtime
+- `tracing`: Logging framework
+- `anyhow`: Error handling
+
+### C++ Dependencies
+- CMake 3.16+
+- C++17 compatible compiler
+- Rust toolchain (for building the underlying library)
+
+### Platform Dependencies
+
+**macOS:**
+- CoreFoundation framework
+- Security framework
+
+**Linux:**
+- pthread
+- dl (dynamic linking)
+
+**Windows:**
+- ws2_32 (Windows Sockets)
+- userenv
+- bcrypt
+
+## API Documentation
+
+### Simplified Rust API
+
+**Core Functions:**
+```rust
+// Write data with automatic group management
+write_frame(session: &MoqSession, track: &str, data: Vec<u8>, new_group: bool) -> Result<()>
+
+// Write single frame in its own group (convenience method)  
+write_single_frame(session: &MoqSession, track: &str, data: Vec<u8>) -> Result<()>
+
+// Session creation (handles everything automatically)
+create_publisher(url: &str, broadcast: &str, tracks: Vec<TrackDefinition>, catalog: CatalogType) -> Result<MoqSession>
+create_subscriber(url: &str, broadcast: &str, tracks: Vec<TrackDefinition>, catalog: CatalogType) -> Result<MoqSession>
+```
+
+**Key Benefits:**
+- **No connection management needed** - sessions handle everything
+- **No manual track producer creation** - automatic on connection
+- **No reconnection logic required** - infinite retry built-in
+- **Graceful error handling** - operations fail safely during network issues
+
+### Simplified C++ API
+
+**Core Methods:**
+```cpp
+// Write data with automatic group management  
+bool WriteFrame(const std::string& track, const void* data, size_t size, bool new_group);
+
+// Write single frame in its own group
+bool WriteSingleFrame(const std::string& track, const void* data, size_t size);
+
+// Session creation (everything automatic)
+static std::unique_ptr<Session> CreatePublisher(const std::string& url, const std::string& broadcast, 
+                                               const std::vector<TrackDefinition>& tracks, CatalogType catalog);
+```
+
+**Key Benefits:**
+- **RAII resource management** - automatic cleanup
+- **Thread-safe operations** - safe from multiple threads  
+- **No manual connection checking** - just call methods
+- **Automatic reconnection** - transparent to application
+
+## Thread Safety
+
+- **Rust**: All public APIs are Send + Sync safe - use from any async context
+- **C++**: Thread-safe operations - safe to call WriteFrame from multiple threads
+- **Callbacks**: May be called from background threads - ensure thread safety in your code
+- **Session Management**: All reconnection logic runs on background tasks - non-blocking
+
+## Migration from Complex APIs
+
+If you're migrating from a more complex MOQ implementation:
+
+### What You Can Remove ❌
+- Manual connection status checking
+- Reconnection logic and retry loops  
+- Track producer creation and management
+- Group lifecycle management
+- Network error recovery code
+- Connection state synchronization
+
+### What You Keep ✅  
+- Your application logic
+- Data preparation and formatting
+- Business logic and timing
+- User interface and presentation
+
+### Simple Migration Example
+
+**Before (complex):**
+```rust
+// Old complex code
+loop {
+    if !session.is_connected().await {
+        session.reconnect().await?;
+        session.recreate_tracks().await?;
+    }
+    
+    match session.write_data("track", data).await {
+        Err(ConnectionError) => continue, // retry loop
+        Err(e) => return Err(e),
+        Ok(_) => break,
+    }
+}
+```
+
+**After (simple):**
+```rust
+// New simple code
+write_frame(&session, "track", data, false).await?;
+// That's it! All error handling and reconnection is automatic
+```
+
+## Error Handling
+
+### Rust Error Handling - Bulletproof by Design
+
+```rust
+// All operations handle errors gracefully - no manual error checking needed!
+match write_frame(&session, "track", data, true).await {
+    Ok(_) => {}, // Success - data sent
+    Err(e) => {
+        // Just log and continue - session will reconnect automatically
+        warn!("Temporary failure: {}", e);
+        // Application keeps running, will work again when connection restored
+    }
+}
+```
+
+**Built-in Error Recovery:**
+- ✅ **Network disconnections**: Infinite reconnection attempts
+- ✅ **Track producer failures**: Automatic recreation
+- ✅ **Group management errors**: Automatic cleanup and retry
+- ✅ **Session failures**: Transparent reconnection
+- ✅ **Relay unavailability**: Keeps trying until available
+
+### C++ Error Handling - Simple and Safe
+
+```cpp
+// Simple boolean returns - easy to handle
+if (session->WriteFrame("track", data.c_str(), data.size(), true)) {
+    // Success
+} else {
+    // Temporary failure - session will reconnect automatically
+    std::cout << "Temporary failure, will retry automatically" << std::endl;
+}
+```
+
+**No Manual Recovery Needed:**
+- Session handles all reconnection logic internally
+- Applications continue running during network outages  
+- Operations resume automatically when connection restored
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+1. Follow Rust conventions for Rust code
+2. Follow Google C++ Style Guide for C++ code
+3. Update documentation for API changes
+4. Add tests for new functionality
+5. Ensure examples work after changes
 
 ## License
 
-This project is licensed under the same license as the original moq-rs project.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Rust not found**: Ensure Rust is installed and in your PATH
-2. **CMake version too old**: Update to CMake 3.16 or later
-3. **Missing dependencies**: Install platform-specific build tools
-
-### Debug Build
-
-For debugging, build with debug symbols:
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCARGO_PROFILE=dev
-cmake --build build
-```
-
-### Logging
-
-The library uses tracing for logging. Set the `RUST_LOG` environment variable:
-
-```bash
-export RUST_LOG=debug
-./moq_example
-```
-
-## Roadmap
-
-- [ ] Streaming API for tracks
-- [ ] Subscription management
-- [ ] Publishing capabilities
-- [ ] Advanced error handling
-- [ ] Performance optimizations
-- [ ] Additional platform support
+This project is dual-licensed under MIT OR Apache-2.0.

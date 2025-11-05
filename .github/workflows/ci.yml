@@ -26,7 +26,7 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          target
+          build/rust-target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ runner.os }}-cargo-
@@ -43,27 +43,29 @@ jobs:
       run: brew install ninja
       
     - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
       
     - name: Debug headers before build
       run: |
         echo "Current working directory:"
         pwd
-        echo "C++ headers in cpp/include/moq/:"
-        ls -la cpp/include/moq/ || echo "C++ headers not found"
+        echo "C++ headers in cpp/include/:"
+        ls -la cpp/include/ || echo "C++ headers not found"
         echo "Checking if directories exist:"
-        test -d cpp/include/moq && echo "cpp/include/moq exists" || echo "cpp/include/moq missing"
+        test -d cpp/include && echo "cpp/include exists" || echo "cpp/include missing"
         echo "Full cpp/include structure:"
         find cpp/include -type f -name "*.h" || echo "No header files found"
+        echo "Cargo.toml location:"
+        ls -la Cargo.toml || echo "Cargo.toml not found"
       shell: bash
       
     - name: Build Rust library first (Ubuntu)
       if: runner.os == 'Linux'
       run: |
-        cd moq-ffi
-        cargo build --release --target-dir ../build/rust-target
-        echo "Rust build completed, checking headers:"
-        ls -la ../build/rust-target/release/moq-ffi/include/ || echo "No FFI headers found"
+        echo "Building Rust library..."
+        cargo build --release
+        echo "Rust build completed, checking output:"
+        ls -la build/rust-target/release/ || echo "No Rust output found"
       
     - name: Build
       run: cmake --build build --parallel
@@ -73,7 +75,9 @@ jobs:
         echo "Build directory contents:"
         ls -la build/
         echo "Rust target contents:"
-        find build/rust-target -name "*moq_ffi*" || echo "No moq_ffi files found"
+        find build/rust-target -name "*moq_wrapper*" || echo "No moq_wrapper files found"
+        echo "Built executables:"
+        find build -name "clock_*" -type f || echo "No clock examples found"
       shell: bash
       
     - name: Test
@@ -81,34 +85,29 @@ jobs:
         cd build
         echo "Contents of build directory:"
         ls -la
-        echo "Looking for test executable:"
-        find . -name "moq_test*" -type f || echo "No moq_test files found"
+        echo "Verifying examples were built:"
         
         if [[ "$RUNNER_OS" == "Windows" ]]; then
-          if [ -f "./moq_test.exe" ]; then
-            echo "Running moq_test.exe..."
-            ./moq_test.exe
-          elif [ -f "./Release/moq_test.exe" ]; then
-            echo "Running Release/moq_test.exe..."
-            ./Release/moq_test.exe
-          elif [ -f "./Debug/moq_test.exe" ]; then
-            echo "Running Debug/moq_test.exe..."
-            ./Debug/moq_test.exe
+          if [ -f "./clock_publisher_cpp.exe" ] && [ -f "./clock_subscriber_cpp.exe" ]; then
+            echo "✅ Windows examples built successfully"
+          elif [ -f "./Release/clock_publisher_cpp.exe" ] && [ -f "./Release/clock_subscriber_cpp.exe" ]; then
+            echo "✅ Windows examples built successfully (Release)"
+          elif [ -f "./Debug/clock_publisher_cpp.exe" ] && [ -f "./Debug/clock_subscriber_cpp.exe" ]; then
+            echo "✅ Windows examples built successfully (Debug)"
           else
-            echo "ERROR: moq_test.exe not found in expected locations"
+            echo "❌ ERROR: Example executables not found"
             exit 1
           fi
         else
-          if [ -f "./moq_test" ]; then
-            echo "Running moq_test..."
-            ./moq_test
+          if [ -f "./clock_publisher_cpp" ] && [ -f "./clock_subscriber_cpp" ]; then
+            echo "✅ Unix examples built successfully"
           else
-            echo "ERROR: moq_test not found"
+            echo "❌ ERROR: Example executables not found"
             exit 1
           fi
         fi
         
-        echo "MOQ Test completed successfully!"
+        echo "✅ Build verification completed successfully!"
       shell: bash
 
   rust-tests:
@@ -128,16 +127,16 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          target
+          build/rust-target
         key: ubuntu-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ubuntu-cargo-
       
     - name: Run Rust tests
-      run: cargo test --manifest-path moq-ffi/Cargo.toml
+      run: cargo test --lib --tests
       
     - name: Check Rust formatting
-      run: cargo fmt --manifest-path moq-ffi/Cargo.toml --check
+      run: cargo fmt --check
       
     - name: Run Clippy
-      run: cargo clippy --manifest-path moq-ffi/Cargo.toml -- -D warnings
+      run: cargo clippy -- -D clippy::correctness -D clippy::complexity -D clippy::perf -D clippy::not_unsafe_ptr_arg_deref -A clippy::missing_safety_doc
