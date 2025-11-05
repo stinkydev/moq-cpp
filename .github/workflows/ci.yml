@@ -66,20 +66,27 @@ jobs:
         cargo build --release
         echo "Rust build completed, checking output:"
         ls -la build/rust-target/release/ || echo "No Rust output found"
+        
+    - name: Build Rust library first (Windows/macOS)
+      if: runner.os != 'Linux'
+      run: |
+        echo "Building Rust library..."
+        cargo build --release
+        echo "Rust build completed"
       
     - name: Build
-      run: cmake --build build --parallel
+      run: cmake --build build --parallel --config Release
       
     - name: Install library for testing
       run: |
         cd build
-        cmake --install . --prefix ../install
+        cmake --install . --prefix ../install --config Release
       
     - name: Build examples against installed library
       run: |
         cd examples
         cmake -B example-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=../install
-        cmake --build example-build --parallel
+        cmake --build example-build --parallel --config Release
         
         echo "Examples built against installed library:"
         ls -la example-build/
