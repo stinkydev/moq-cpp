@@ -43,7 +43,7 @@ jobs:
       run: brew install ninja
       
     - name: Configure CMake
-      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       
     - name: Debug headers before build
       run: |
@@ -70,36 +70,56 @@ jobs:
     - name: Build
       run: cmake --build build --parallel
       
+    - name: Install library for testing
+      run: |
+        cd build
+        cmake --install . --prefix ../install
+      
+    - name: Build examples against installed library
+      run: |
+        cd examples
+        cmake -B example-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=../install
+        cmake --build example-build --parallel
+        
+        echo "Examples built against installed library:"
+        ls -la example-build/
+      
     - name: List build artifacts
       run: |
         echo "Build directory contents:"
         ls -la build/
         echo "Rust target contents:"
         find build/rust-target -name "*moq_wrapper*" || echo "No moq_wrapper files found"
-        echo "Built executables:"
-        find build -name "clock_*" -type f || echo "No clock examples found"
+        echo "Installed library structure:"
+        find install -type f | head -20 || echo "No installation found"
+        echo "Example build results:"
+        find examples/example-build -name "clock_*" -o -name "*.exe" | head -10 || echo "No examples found"
       shell: bash
       
     - name: Test
       run: |
-        cd build
-        echo "Contents of build directory:"
+        echo "=== Testing library installation ==="
+        echo "Checking installed files:"
+        find install -type f | head -20
+        
+        echo "=== Testing examples built against installed library ==="
+        cd examples/example-build
+        echo "Contents of example build directory:"
         ls -la
-        echo "Verifying examples were built:"
         
         if [[ "$RUNNER_OS" == "Windows" ]]; then
-          if [ -f "./clock_publisher_cpp.exe" ] && [ -f "./clock_subscriber_cpp.exe" ]; then
+          if [ -f "./clock_publisher_example.exe" ] && [ -f "./clock_subscriber_example.exe" ]; then
             echo "✅ Windows examples built successfully"
-          elif [ -f "./Release/clock_publisher_cpp.exe" ] && [ -f "./Release/clock_subscriber_cpp.exe" ]; then
+          elif [ -f "./Release/clock_publisher_example.exe" ] && [ -f "./Release/clock_subscriber_example.exe" ]; then
             echo "✅ Windows examples built successfully (Release)"
-          elif [ -f "./Debug/clock_publisher_cpp.exe" ] && [ -f "./Debug/clock_subscriber_cpp.exe" ]; then
+          elif [ -f "./Debug/clock_publisher_example.exe" ] && [ -f "./Debug/clock_subscriber_example.exe" ]; then
             echo "✅ Windows examples built successfully (Debug)"
           else
             echo "❌ ERROR: Example executables not found"
             exit 1
           fi
         else
-          if [ -f "./clock_publisher_cpp" ] && [ -f "./clock_subscriber_cpp" ]; then
+          if [ -f "./clock_publisher_example" ] && [ -f "./clock_subscriber_example" ]; then
             echo "✅ Unix examples built successfully"
           else
             echo "❌ ERROR: Example executables not found"
@@ -107,7 +127,9 @@ jobs:
           fi
         fi
         
-        echo "✅ Build verification completed successfully!"
+        echo "✅ All verification tests completed successfully!"
+        echo "✅ CMake export configuration works correctly!"
+        echo "✅ Examples can be built as separate projects using find_package!"
       shell: bash
 
   rust-tests:

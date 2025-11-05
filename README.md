@@ -20,11 +20,13 @@ A comprehensive wrapper library for MOQ (Media over QUIC) with automatic reconne
 │   ├── src/              # C++ implementation
 │   │   └── moq_wrapper.cpp
 │   └── README.md         # C++ specific documentation
-├── examples/              # Example applications
+├── examples/              # Example applications (separate CMake project)
 │   ├── clock_example.rs      # Rust clock example with robust error handling
 │   ├── hang_subscriber.rs    # Rust hang subscriber
 │   ├── clock_publisher.cpp   # C++ clock publisher
-│   └── clock_subscriber.cpp  # C++ clock subscriber
+│   ├── clock_subscriber.cpp  # C++ clock subscriber
+│   ├── CMakeLists.txt        # Separate CMake project for examples
+│   └── README.md             # Instructions for building examples
 ├── tests/                 # Test files
 ├── CMakeLists.txt        # C++ build configuration
 └── Cargo.toml           # Rust build configuration
@@ -55,16 +57,31 @@ mkdir build && cd build
 # Configure (examples disabled by default)
 cmake .. -DCMAKE_BUILD_TYPE=Release
 
-# Build library only
-cmake --build .
-
-# Build with examples
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
+# Build library
 cmake --build .
 
 # Install
 cmake --install . --prefix /usr/local
 ```
+
+### C++ Examples
+
+The examples are now a separate CMake project that demonstrates how to use the installed library:
+
+```bash
+# First, build and install the library
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build .
+cmake --install . --prefix /usr/local
+
+# Then build examples
+cd ../examples
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+See `examples/README.md` for detailed instructions.
 
 ## Quick Start
 
@@ -226,8 +243,10 @@ match write_frame(&session, "data", payload, true).await {
 
 ### CMake Options
 
-- `BUILD_EXAMPLES`: Build C++ examples (default: OFF)
 - `CMAKE_BUILD_TYPE`: Build type (Debug/Release)
+- `CMAKE_INSTALL_PREFIX`: Installation directory (default: /usr/local)
+
+Note: Examples are now a separate CMake project in the `examples/` directory.
 
 ### Rust Features
 

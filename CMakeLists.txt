@@ -4,9 +4,6 @@ project(moq-cpp VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Build options
-option(BUILD_EXAMPLES "Build C++ examples" OFF)
-
 # Find Rust and Cargo
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 find_program(RUSTC_EXECUTABLE rustc REQUIRED)
@@ -138,41 +135,6 @@ install(FILES
     DESTINATION lib/cmake/moq-cpp
 )
 
-# Examples (optional)
-if(BUILD_EXAMPLES)
-    # Clock publisher example
-    add_executable(clock_publisher_cpp
-        examples/clock_publisher.cpp
-    )
-    target_link_libraries(clock_publisher_cpp PRIVATE moq-cpp)
-    target_include_directories(clock_publisher_cpp PRIVATE cpp/include)
-
-    # Clock subscriber example  
-    add_executable(clock_subscriber_cpp
-        examples/clock_subscriber.cpp
-    )
-    target_link_libraries(clock_subscriber_cpp PRIVATE moq-cpp)
-    target_include_directories(clock_subscriber_cpp PRIVATE cpp/include)
-
-    # Set RPATH for examples to find libraries
-    if(APPLE)
-        set_target_properties(clock_publisher_cpp clock_subscriber_cpp PROPERTIES
-            BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR};${RUST_TARGET_DIR}"
-            INSTALL_RPATH "@executable_path/../lib"
-        )
-    elseif(UNIX)
-        set_target_properties(clock_publisher_cpp clock_subscriber_cpp PROPERTIES
-            BUILD_RPATH "${CMAKE_CURRENT_BINARY_DIR};${RUST_TARGET_DIR}"
-            INSTALL_RPATH "$ORIGIN/../lib"
-        )
-    endif()
-
-    # Install examples
-    install(TARGETS clock_publisher_cpp clock_subscriber_cpp
-        RUNTIME DESTINATION bin/examples
-    )
-endif()
-
 # Copy Rust library to output directory for runtime
 add_custom_command(TARGET moq-cpp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -180,19 +142,3 @@ add_custom_command(TARGET moq-cpp POST_BUILD
         $<TARGET_FILE_DIR:moq-cpp>
     COMMENT "Copying Rust library to output directory"
 )
-
-# Copy libraries for examples if they're built
-if(BUILD_EXAMPLES)
-    add_custom_command(TARGET clock_publisher_cpp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${RUST_LIB_PATH}
-            $<TARGET_FILE_DIR:clock_publisher_cpp>
-        COMMENT "Copying Rust library for publisher example"
-    )
-    add_custom_command(TARGET clock_subscriber_cpp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${RUST_LIB_PATH}
-            $<TARGET_FILE_DIR:clock_subscriber_cpp>
-        COMMENT "Copying Rust library for subscriber example"
-    )
-endif()

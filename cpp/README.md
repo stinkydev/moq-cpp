@@ -23,7 +23,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build .
 
 # Optionally build examples
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build .
 ```
 
@@ -105,7 +105,22 @@ while (!session->IsConnected()) {
 
 ## Examples
 
-The examples are built when `BUILD_EXAMPLES=ON` is set during CMake configuration.
+The examples are provided as a separate CMake project in the `examples/` directory. They demonstrate how to use the library as an external dependency:
+
+```bash
+# First install the library
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build .
+cmake --install . --prefix /usr/local
+
+# Then build examples
+cd ../examples
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+See `examples/README.md` for detailed instructions.
 
 ### Clock Publisher
 
