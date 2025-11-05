@@ -31,7 +31,8 @@ endif()
 # Platform-specific library naming
 if(WIN32)
     set(RUST_LIB_NAME "moq_wrapper.dll")
-    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/deps/${RUST_LIB_NAME}")
+    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/${RUST_LIB_NAME}")
+    set(RUST_IMPLIB_PATH "${RUST_TARGET_DIR}/deps/moq_wrapper.lib")
 elseif(APPLE)
     set(RUST_LIB_NAME "libmoq_wrapper.dylib")
     set(RUST_LIB_PATH "${RUST_TARGET_DIR}/deps/${RUST_LIB_NAME}")
@@ -41,11 +42,17 @@ else()
 endif()
 
 # Custom target to build the Rust library
+if(WIN32)
+    set(RUST_BYPRODUCTS ${RUST_LIB_PATH} ${RUST_IMPLIB_PATH})
+else()
+    set(RUST_BYPRODUCTS ${RUST_LIB_PATH})
+endif()
+
 add_custom_target(rust_lib
     COMMAND ${CARGO_EXECUTABLE} build ${RUST_BUILD_FLAG}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Building Rust library"
-    BYPRODUCTS ${RUST_LIB_PATH}
+    BYPRODUCTS ${RUST_BYPRODUCTS}
 )
 
 # Create the C++ wrapper library
@@ -63,11 +70,22 @@ target_include_directories(moq-cpp PUBLIC
 )
 
 # Create imported target for Rust library properly
-add_library(moq_rust SHARED IMPORTED)
-set_target_properties(moq_rust PROPERTIES
-    IMPORTED_LOCATION ${RUST_LIB_PATH}
-    IMPORTED_NO_SONAME TRUE
-)
+if(WIN32)
+    # Windows needs both the DLL and import library
+    add_library(moq_rust SHARED IMPORTED)
+    set_target_properties(moq_rust PROPERTIES
+        IMPORTED_LOCATION ${RUST_LIB_PATH}
+        IMPORTED_IMPLIB ${RUST_IMPLIB_PATH}
+        IMPORTED_NO_SONAME TRUE
+    )
+else()
+    # Unix-like systems
+    add_library(moq_rust SHARED IMPORTED)
+    set_target_properties(moq_rust PROPERTIES
+        IMPORTED_LOCATION ${RUST_LIB_PATH}
+        IMPORTED_NO_SONAME TRUE
+    )
+endif()
 add_dependencies(moq_rust rust_lib)
 
 # Link using the imported target instead of absolute path
@@ -134,7 +152,14 @@ install(TARGETS moq-cpp
 install(DIRECTORY cpp/include/ DESTINATION include)
 
 # Install the Rust library alongside the C++ library
-install(FILES ${RUST_LIB_PATH} DESTINATION lib)
+if(WIN32)
+    # On Windows, install both DLL and import library
+    install(FILES ${RUST_LIB_PATH} DESTINATION bin)  # DLL goes to bin
+    install(FILES ${RUST_IMPLIB_PATH} DESTINATION lib)  # .lib goes to lib
+else()
+    # On Unix, install shared library to lib
+    install(FILES ${RUST_LIB_PATH} DESTINATION lib)
+endif()
 
 # Export package
 include(CMakePackageConfigHelpers)
