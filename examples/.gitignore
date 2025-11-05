@@ -1,1 +1,14 @@
-example-build
+# Build directories
+build/
+example-build/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Executables
+clock_publisher_example
+clock_subscriber_example
+*.exe
