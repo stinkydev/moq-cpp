@@ -6,8 +6,8 @@ use tokio::runtime::Runtime;
 use tracing::Level;
 
 use crate::{
-    close_session, create_publisher, create_subscriber, set_log_level, set_data_callback, write_frame,
-    write_single_frame, CatalogType, MoqSession, TrackDefinition, TrackType,
+    close_session, create_publisher, create_subscriber, set_data_callback, set_log_level,
+    write_frame, write_single_frame, CatalogType, MoqSession, TrackDefinition, TrackType,
 };
 
 // Opaque handles for C API
@@ -26,6 +26,7 @@ pub struct CTrackDefinitionFFI {
 }
 
 // Keep the old struct for backward compatibility
+#[allow(dead_code)]
 pub struct CTrackDefinition {
     name: String,
     priority: u32,
@@ -207,7 +208,7 @@ pub unsafe extern "C" fn moq_create_publisher(
                 println!("DEBUG: Track {} has null name", i);
                 continue;
             }
-            
+
             let name_str = unsafe {
                 match CStr::from_ptr(track_ffi.name).to_str() {
                     Ok(s) => s,
@@ -217,10 +218,12 @@ pub unsafe extern "C" fn moq_create_publisher(
                     }
                 }
             };
-            
-            println!("DEBUG: Track {} name: '{}', priority: {}, type: {}", 
-                     i, name_str, track_ffi.priority, track_ffi.track_type);
-            
+
+            println!(
+                "DEBUG: Track {} name: '{}', priority: {}, type: {}",
+                i, name_str, track_ffi.priority, track_ffi.track_type
+            );
+
             result.push(TrackDefinition::new(
                 name_str,
                 track_ffi.priority,
@@ -247,10 +250,10 @@ pub unsafe extern "C" fn moq_create_publisher(
         Err(_) => return ptr::null_mut(),
     };
 
-    let c_session = CMoqSession { 
-        session, 
-        runtime, 
-        data_callback: Arc::new(RwLock::new(None)) 
+    let c_session = CMoqSession {
+        session,
+        runtime,
+        data_callback: Arc::new(RwLock::new(None)),
     };
 
     Box::into_raw(Box::new(c_session))
@@ -300,7 +303,7 @@ pub unsafe extern "C" fn moq_create_subscriber(
                 println!("DEBUG: Track {} has null name", i);
                 continue;
             }
-            
+
             let name_str = unsafe {
                 match CStr::from_ptr(track_ffi.name).to_str() {
                     Ok(s) => s,
@@ -310,10 +313,12 @@ pub unsafe extern "C" fn moq_create_subscriber(
                     }
                 }
             };
-            
-            println!("DEBUG: Track {} name: '{}', priority: {}, type: {}", 
-                     i, name_str, track_ffi.priority, track_ffi.track_type);
-            
+
+            println!(
+                "DEBUG: Track {} name: '{}', priority: {}, type: {}",
+                i, name_str, track_ffi.priority, track_ffi.track_type
+            );
+
             result.push(TrackDefinition::new(
                 name_str,
                 track_ffi.priority,
@@ -340,10 +345,10 @@ pub unsafe extern "C" fn moq_create_subscriber(
         Err(_) => return ptr::null_mut(),
     };
 
-    let c_session = CMoqSession { 
-        session, 
-        runtime, 
-        data_callback: Arc::new(RwLock::new(None)) 
+    let c_session = CMoqSession {
+        session,
+        runtime,
+        data_callback: Arc::new(RwLock::new(None)),
     };
 
     Box::into_raw(Box::new(c_session))
@@ -375,18 +380,16 @@ pub unsafe extern "C" fn moq_session_set_data_callback(
     // Set up the Rust callback that will call the C callback with session context
     let session_addr = session as usize; // Convert to usize for thread safety
     let data_callback_ref = session_ref.data_callback.clone();
-    
+
     session_ref.runtime.block_on(set_data_callback(
         &session_ref.session,
         move |track: String, data: Vec<u8>| {
             if let Ok(cb_guard) = data_callback_ref.read() {
                 if let Some(callback) = *cb_guard {
                     let track_cstr = CString::new(track).unwrap_or_default();
-                    unsafe {
-                        // Convert back to pointer for the callback
-                        let session_ptr = session_addr as *mut CMoqSession;
-                        callback(session_ptr, track_cstr.as_ptr(), data.as_ptr(), data.len());
-                    }
+                    // Convert back to pointer for the callback
+                    let session_ptr = session_addr as *mut CMoqSession;
+                    callback(session_ptr, track_cstr.as_ptr(), data.as_ptr(), data.len());
                 }
             }
         },
@@ -564,10 +567,16 @@ pub unsafe extern "C" fn moq_session_set_log_callback(
             callback(target_cstr.as_ptr(), level_int, message_cstr.as_ptr());
         };
 
-        session_ref.runtime.block_on(session_ref.session.set_log_callback(Some(Box::new(callback_wrapper))));
+        session_ref.runtime.block_on(
+            session_ref
+                .session
+                .set_log_callback(Some(Box::new(callback_wrapper))),
+        );
         MoqResult::Success
     } else {
-        session_ref.runtime.block_on(session_ref.session.set_log_callback(None));
+        session_ref
+            .runtime
+            .block_on(session_ref.session.set_log_callback(None));
         MoqResult::Success
     }
 }

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use moq_wrapper::{
-    close_session, create_subscriber, init, set_data_callback, CatalogType, Level, SessionEvent,
-    TrackDefinition, TrackType,
+    close_session, create_subscriber, set_data_callback, set_log_level, CatalogType, Level,
+    SessionEvent, TrackDefinition, TrackType,
 };
 
 #[derive(Parser)]
@@ -24,8 +24,8 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging using the moq-wrapper init function
-    init(Level::INFO, None);
+    // Initialize logging using the moq-wrapper set_log_level function
+    set_log_level(Level::INFO);
 
     info!(
         "🎥 Starting hang subscriber for broadcast: {}",

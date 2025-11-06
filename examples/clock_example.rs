@@ -6,8 +6,8 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 
 use moq_wrapper::{
-    close_session, create_publisher, create_subscriber, init, set_data_callback, write_frame,
-    CatalogType, Level, MoqSession, SessionEvent, TrackDefinition,
+    close_session, create_publisher, create_subscriber, set_data_callback, set_log_level,
+    write_frame, CatalogType, Level, MoqSession, SessionEvent, TrackDefinition,
 };
 
 #[derive(Parser)]
@@ -57,8 +57,8 @@ enum Command {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging using the moq-wrapper init function
-    init(Level::DEBUG, None);
+    // Initialize logging using the moq-wrapper set_log_level function
+    set_log_level(Level::DEBUG);
 
     match args.command {
         Command::Publish => run_publisher(args).await,

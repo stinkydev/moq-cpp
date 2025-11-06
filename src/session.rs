@@ -27,7 +27,7 @@ macro_rules! session_log {
             let message = format!($($arg)*);
             let target = module_path!();
             tracing::info!("{}", message);
-            
+
             let session = $session.clone();
             tokio::spawn(async move {
                 session.session_log(Level::INFO, target, &message).await;
@@ -39,7 +39,7 @@ macro_rules! session_log {
             let message = format!($($arg)*);
             let target = module_path!();
             tracing::debug!("{}", message);
-            
+
             let session = $session.clone();
             tokio::spawn(async move {
                 session.session_log(Level::DEBUG, target, &message).await;
@@ -51,7 +51,7 @@ macro_rules! session_log {
             let message = format!($($arg)*);
             let target = module_path!();
             tracing::warn!("{}", message);
-            
+
             let session = $session.clone();
             tokio::spawn(async move {
                 session.session_log(Level::WARN, target, &message).await;
@@ -63,7 +63,7 @@ macro_rules! session_log {
             let message = format!($($arg)*);
             let target = module_path!();
             tracing::error!("{}", message);
-            
+
             let session = $session.clone();
             tokio::spawn(async move {
                 session.session_log(Level::ERROR, target, &message).await;
@@ -681,9 +681,10 @@ impl MoqSession {
     /// Only logs messages with targets related to this session
     async fn session_log(&self, level: Level, target: &str, message: &str) {
         // Filter to only session-related log messages
-        if target.starts_with("moq_wrapper::session") || 
-           target.starts_with("moq_ffi") ||
-           target.starts_with("session") {
+        if target.starts_with("moq_wrapper::session")
+            || target.starts_with("moq_ffi")
+            || target.starts_with("session")
+        {
             if let Some(callback) = self.log_callback.read().await.as_ref() {
                 callback(target, level, message);
             }

@@ -43,8 +43,6 @@ pub fn set_log_level(log_level: Level) {
     tracing_subscriber::fmt().with_max_level(log_level).init();
 }
 
-
-
 /// Create a quick publisher session with specified tracks and catalog
 pub async fn create_publisher(
     url: &str,
