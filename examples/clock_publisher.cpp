@@ -70,8 +70,8 @@ int main(int argc, char *argv[])
   std::cout << "Connecting to: " << url << std::endl;
   std::cout << "Broadcasting: " << broadcast << std::endl;
 
-  // Initialize MOQ library with custom logging
-  moq::Init(moq::LogLevel::kInfo, LogCallback);
+  // Initialize MOQ library (basic tracing only)
+  moq::Init(moq::LogLevel::kInfo);
 
   // Define the clock track
   std::vector<moq::TrackDefinition> tracks;
@@ -85,6 +85,9 @@ int main(int argc, char *argv[])
     std::cerr << "Failed to create publisher session" << std::endl;
     return 1;
   }
+
+  // Set session-specific log callback
+  session->SetLogCallback(LogCallback);
 
   // Wait for connection
   std::cout << "Connecting..." << std::endl;

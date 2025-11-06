@@ -59,6 +59,13 @@ pub enum CCatalogType {
     Hang = 2,
 }
 
+#[repr(C)]
+pub enum MoqResult {
+    Success = 0,
+    InvalidArgument = 1,
+    RuntimeError = 2,
+}
+
 // Callback types
 pub type CLogCallback = extern "C" fn(*const c_char, c_int, *const c_char);
 pub type CDataCallback = extern "C" fn(*const c_char, *const u8, usize);
@@ -108,26 +115,11 @@ impl From<CCatalogType> for CatalogType {
 
 /// Initialize the MOQ library with logging
 #[no_mangle]
-pub extern "C" fn moq_init(log_level: CLogLevel, log_callback: Option<CLogCallback>) {
+pub extern "C" fn moq_init(log_level: CLogLevel, _log_callback: Option<CLogCallback>) {
     let level = Level::from(log_level);
-
-    if let Some(callback) = log_callback {
-        let callback_wrapper = move |target: &str, level: Level, message: &str| {
-            let target_cstr = CString::new(target).unwrap_or_default();
-            let message_cstr = CString::new(message).unwrap_or_default();
-            let level_int = match level {
-                Level::TRACE => 0,
-                Level::DEBUG => 1,
-                Level::INFO => 2,
-                Level::WARN => 3,
-                Level::ERROR => 4,
-            };
-            callback(target_cstr.as_ptr(), level_int, message_cstr.as_ptr());
-        };
-        init(level, Some(Box::new(callback_wrapper)));
-    } else {
-        init(level, None);
-    }
+    // Note: Log callbacks are now set on individual MoqSession instances
+    // The log_callback parameter is ignored for backward compatibility
+    init(level);
 }
 
 /// Create a new track definition
@@ -512,6 +504,48 @@ pub unsafe extern "C" fn moq_close_session(session: *mut CMoqSession) -> c_int {
 /// # Safety
 ///
 /// This function is unsafe because it takes ownership of a raw pointer.
+/// Set a log callback for a specific session to receive session-specific log messages
+///
+/// # Safety
+/// The caller must ensure that `session` was previously allocated by
+/// `moq_create_publisher` or `moq_create_subscriber` and has not been freed before.
+/// The callback function pointer must be valid for the lifetime of the session.
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_set_log_callback(
+    session: *mut CMoqSession,
+    callback: Option<CLogCallback>,
+) -> MoqResult {
+    if session.is_null() {
+        return MoqResult::InvalidArgument;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    if let Some(callback) = callback {
+        let callback_wrapper = move |target: &str, level: Level, message: &str| {
+            let target_cstr = CString::new(target).unwrap_or_default();
+            let message_cstr = CString::new(message).unwrap_or_default();
+            let level_int = match level {
+                Level::TRACE => 0,
+                Level::DEBUG => 1,
+                Level::INFO => 2,
+                Level::WARN => 3,
+                Level::ERROR => 4,
+            };
+            callback(target_cstr.as_ptr(), level_int, message_cstr.as_ptr());
+        };
+
+        session_ref.runtime.block_on(session_ref.session.set_log_callback(Some(Box::new(callback_wrapper))));
+        MoqResult::Success
+    } else {
+        session_ref.runtime.block_on(session_ref.session.set_log_callback(None));
+        MoqResult::Success
+    }
+}
+
+/// Free a MoQ session and its resources
+///
+/// # Safety
 /// The caller must ensure that `session` was previously allocated by
 /// `moq_create_publisher` or `moq_create_subscriber` and has not been freed before.
 #[no_mangle]

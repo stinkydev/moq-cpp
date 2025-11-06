@@ -74,8 +74,8 @@ int main(int argc, char *argv[])
   std::cout << "Connecting to: " << url << std::endl;
   std::cout << "Subscribing to: " << broadcast << std::endl;
 
-  // Initialize MOQ library with custom logging
-  moq::Init(moq::LogLevel::kInfo, LogCallback);
+  // Initialize MOQ library (basic tracing only)
+  moq::Init(moq::LogLevel::kInfo);
 
   // Define the tracks we want to subscribe to
   std::vector<moq::TrackDefinition> tracks;
@@ -89,6 +89,9 @@ int main(int argc, char *argv[])
     std::cerr << "Failed to create subscriber session" << std::endl;
     return 1;
   }
+
+  // Set session-specific log callback
+  session->SetLogCallback(LogCallback);
 
   // Set up data callback
   if (!session->SetDataCallback(DataCallback))

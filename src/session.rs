@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch, RwLock};
 use tokio::time::{sleep, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, Level};
 
 use moq_lite::{
     Broadcast, BroadcastConsumer, BroadcastProducer, GroupProducer, Origin, OriginConsumer,
@@ -16,6 +16,61 @@ use moq_native::Client;
 use crate::catalog::{Catalog, CatalogType, TrackDefinition};
 use crate::config::{SessionConfig, WrapperError};
 use crate::subscription::SubscriptionManager;
+
+/// Log callback function type for session-specific logging
+pub type SessionLogCallback = Box<dyn Fn(&str, Level, &str) + Send + Sync>;
+
+/// Macro for session-aware logging that sends to both tracing and session callback
+macro_rules! session_log {
+    ($session:expr, info, $($arg:tt)*) => {
+        {
+            let message = format!($($arg)*);
+            let target = module_path!();
+            tracing::info!("{}", message);
+            
+            let session = $session.clone();
+            tokio::spawn(async move {
+                session.session_log(Level::INFO, target, &message).await;
+            });
+        }
+    };
+    ($session:expr, debug, $($arg:tt)*) => {
+        {
+            let message = format!($($arg)*);
+            let target = module_path!();
+            tracing::debug!("{}", message);
+            
+            let session = $session.clone();
+            tokio::spawn(async move {
+                session.session_log(Level::DEBUG, target, &message).await;
+            });
+        }
+    };
+    ($session:expr, warn, $($arg:tt)*) => {
+        {
+            let message = format!($($arg)*);
+            let target = module_path!();
+            tracing::warn!("{}", message);
+            
+            let session = $session.clone();
+            tokio::spawn(async move {
+                session.session_log(Level::WARN, target, &message).await;
+            });
+        }
+    };
+    ($session:expr, error, $($arg:tt)*) => {
+        {
+            let message = format!($($arg)*);
+            let target = module_path!();
+            tracing::error!("{}", message);
+            
+            let session = $session.clone();
+            tokio::spawn(async move {
+                session.session_log(Level::ERROR, target, &message).await;
+            });
+        }
+    };
+}
 
 #[derive(Clone, Debug)]
 pub enum SessionType {
@@ -72,6 +127,9 @@ pub struct MoqSession {
     // Shutdown signal
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
+
+    // Session logging
+    log_callback: Arc<RwLock<Option<SessionLogCallback>>>,
 }
 
 #[derive(Clone)]
@@ -170,6 +228,7 @@ impl MoqSession {
             subscription_manager: Arc::new(RwLock::new(None)),
             shutdown_tx,
             shutdown_rx,
+            log_callback: Arc::new(RwLock::new(None)),
         };
 
         // Initialize subscription manager after session creation
@@ -181,7 +240,7 @@ impl MoqSession {
 
     /// Start the session and handle connections/reconnections
     pub async fn start(&self) -> Result<()> {
-        info!("Starting MoQ session: {:?}", self.session_type);
+        session_log!(self, info, "Starting MoQ session: {:?}", self.session_type);
 
         let state = self.state.clone();
         let config = self.config.clone();
@@ -599,6 +658,36 @@ impl MoqSession {
 
         info!("Set catalog type: {:?}", catalog_type);
         Ok(())
+    }
+
+    /// Set a log callback to receive session-specific log messages
+    ///
+    /// # Arguments
+    /// * `callback` - Optional callback function that receives (target, level, message)
+    ///
+    /// # Example
+    /// ```rust
+    /// use tracing::Level;
+    ///
+    /// session.set_log_callback(Some(Box::new(|target, level, message| {
+    ///     println!("[SESSION][{}] {}: {}", level, target, message);
+    /// })));
+    /// ```
+    pub async fn set_log_callback(&self, callback: Option<SessionLogCallback>) {
+        *self.log_callback.write().await = callback;
+    }
+
+    /// Internal method to log session-specific messages
+    /// Only logs messages with targets related to this session
+    async fn session_log(&self, level: Level, target: &str, message: &str) {
+        // Filter to only session-related log messages
+        if target.starts_with("moq_wrapper::session") || 
+           target.starts_with("moq_ffi") ||
+           target.starts_with("session") {
+            if let Some(callback) = self.log_callback.read().await.as_ref() {
+                callback(target, level, message);
+            }
+        }
     }
 
     /// Publish catalog data to catalog.json track (internal method called during setup)
