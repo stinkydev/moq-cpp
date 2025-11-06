@@ -89,6 +89,7 @@ else()
         IMPORTED_NO_SONAME TRUE
     )
 endif()
+
 add_dependencies(moq_rust rust_lib)
 
 # Link using the imported target instead of absolute path
@@ -97,9 +98,9 @@ target_link_libraries(moq-cpp PRIVATE moq_rust)
 # Fix the library reference to use @rpath on macOS
 if(APPLE)
     add_custom_command(TARGET moq-cpp POST_BUILD
-        COMMAND ${CMAKE_INSTALL_NAME_TOOL} -change 
-        "${RUST_LIB_PATH}" 
-        "@rpath/libmoq_wrapper.dylib" 
+        COMMAND ${CMAKE_INSTALL_NAME_TOOL} -change
+        "${RUST_LIB_PATH}"
+        "@rpath/libmoq_wrapper.dylib"
         "$<TARGET_FILE:moq-cpp>"
         COMMENT "Fixing Rust library path to use @rpath"
     )
@@ -215,7 +216,7 @@ install(FILES
 # Copy Rust library to output directory for runtime
 add_custom_command(TARGET moq-cpp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${RUST_LIB_PATH}
-        $<TARGET_FILE_DIR:moq-cpp>
+    ${RUST_LIB_PATH}
+    $<TARGET_FILE_DIR:moq-cpp>
     COMMENT "Copying Rust library to output directory"
 )

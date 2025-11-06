@@ -19,7 +19,8 @@ pub struct TrackManager {
 }
 
 #[derive(Clone)]
-struct TrackHandle {
+#[allow(dead_code)]
+pub struct TrackHandle {
     producer: Option<TrackProducer>,
     consumer: Option<TrackConsumer>,
     track_info: Track,

@@ -14,6 +14,7 @@ use crate::{
 // Global storage for data callbacks
 static mut DATA_CALLBACKS: Option<Mutex<HashMap<usize, CDataCallback>>> = None;
 
+#[allow(static_mut_refs)]
 fn init_callbacks() {
     unsafe {
         if DATA_CALLBACKS.is_none() {
@@ -130,6 +131,11 @@ pub extern "C" fn moq_init(log_level: CLogLevel, log_callback: Option<CLogCallba
 }
 
 /// Create a new track definition
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences raw pointers passed from C.
+/// The caller must ensure that `name` is a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn moq_track_definition_new(
     name: *const c_char,
@@ -155,6 +161,12 @@ pub unsafe extern "C" fn moq_track_definition_new(
 }
 
 /// Free a track definition
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it takes ownership of a raw pointer.
+/// The caller must ensure that `track_def` was previously allocated by `moq_track_definition_new`
+/// and has not been freed before.
 #[no_mangle]
 pub unsafe extern "C" fn moq_track_definition_free(track_def: *mut CTrackDefinition) {
     if !track_def.is_null() {
@@ -163,6 +175,14 @@ pub unsafe extern "C" fn moq_track_definition_free(track_def: *mut CTrackDefinit
 }
 
 /// Create a publisher session
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences raw pointers passed from C.
+/// The caller must ensure that:
+/// - `url` and `broadcast_name` are valid null-terminated C strings
+/// - `tracks` is a valid array of `track_count` elements
+/// - All track pointers in the array are valid
 #[no_mangle]
 pub unsafe extern "C" fn moq_create_publisher(
     url: *const c_char,
@@ -231,6 +251,14 @@ pub unsafe extern "C" fn moq_create_publisher(
 }
 
 /// Create a subscriber session
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences raw pointers passed from C.
+/// The caller must ensure that:
+/// - `url` and `broadcast_name` are valid null-terminated C strings
+/// - `tracks` is a valid array of `track_count` elements
+/// - All track pointers in the array are valid
 #[no_mangle]
 pub unsafe extern "C" fn moq_create_subscriber(
     url: *const c_char,
@@ -299,6 +327,12 @@ pub unsafe extern "C" fn moq_create_subscriber(
 }
 
 /// Set data callback for receiving data
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences the raw `session` pointer.
+/// The caller must ensure that `session` is a valid pointer returned from
+/// `moq_create_publisher` or `moq_create_subscriber`.
 #[no_mangle]
 pub unsafe extern "C" fn moq_set_data_callback(
     session: *mut CMoqSession,
@@ -342,6 +376,14 @@ pub unsafe extern "C" fn moq_set_data_callback(
 
 /// Write a single frame in its own group (convenience function)
 /// This corresponds to lib.rs write_single_frame()
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences raw pointers.
+/// The caller must ensure that:
+/// - `session` is a valid pointer to a CMoqSession
+/// - `track_name` is a valid null-terminated C string
+/// - `data` points to a valid buffer of at least `data_len` bytes
 #[no_mangle]
 pub unsafe extern "C" fn moq_write_single_frame(
     session: *mut CMoqSession,
@@ -377,6 +419,14 @@ pub unsafe extern "C" fn moq_write_single_frame(
 
 /// Write a frame to a track with optional new group creation
 /// This corresponds to lib.rs write_frame()
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences raw pointers.
+/// The caller must ensure that:
+/// - `session` is a valid pointer to a CMoqSession
+/// - `track_name` is a valid null-terminated C string
+/// - `data` points to a valid buffer of at least `data_len` bytes
 #[no_mangle]
 pub unsafe extern "C" fn moq_write_frame(
     session: *mut CMoqSession,
@@ -413,6 +463,11 @@ pub unsafe extern "C" fn moq_write_frame(
 }
 
 /// Check if session is connected
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences the raw `session` pointer.
+/// The caller must ensure that `session` is a valid pointer to a CMoqSession.
 #[no_mangle]
 pub unsafe extern "C" fn moq_is_connected(session: *mut CMoqSession) -> c_int {
     if session.is_null() {
@@ -431,6 +486,11 @@ pub unsafe extern "C" fn moq_is_connected(session: *mut CMoqSession) -> c_int {
 }
 
 /// Close a session
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences the raw `session` pointer.
+/// The caller must ensure that `session` is a valid pointer to a CMoqSession.
 #[no_mangle]
 pub unsafe extern "C" fn moq_close_session(session: *mut CMoqSession) -> c_int {
     if session.is_null() {
@@ -448,6 +508,12 @@ pub unsafe extern "C" fn moq_close_session(session: *mut CMoqSession) -> c_int {
 }
 
 /// Free a session
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it takes ownership of a raw pointer.
+/// The caller must ensure that `session` was previously allocated by 
+/// `moq_create_publisher` or `moq_create_subscriber` and has not been freed before.
 #[no_mangle]
 pub unsafe extern "C" fn moq_session_free(session: *mut CMoqSession) {
     if !session.is_null() {

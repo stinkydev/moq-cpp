@@ -47,19 +47,19 @@ pub struct ConnectionConfig {
 impl Default for ConnectionConfig {
     fn default() -> Self {
         let mut client_config = moq_native::ClientConfig::default();
-        
+
         // Force IPv4 binding on Windows to avoid IPv6 issues
         #[cfg(windows)]
         {
             client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
         }
-        
+
         Self {
             url: url::Url::parse("https://relay.moq.dev/anon").unwrap(),
             max_reconnect_attempts: 0, // Infinite reconnection attempts
             reconnect_delay: Duration::from_millis(500), // Faster initial reconnection
             max_reconnect_delay: Duration::from_secs(10), // Shorter max delay for better responsiveness
-            ipv4_only: cfg!(windows), // Default to IPv4-only on Windows
+            ipv4_only: cfg!(windows),                     // Default to IPv4-only on Windows
             client_config,
         }
     }

@@ -83,11 +83,17 @@ impl ResilientTrackConsumer {
                             .await
                         {
                             Ok(consumer) => {
-                                info!("[ResilientTrackConsumer] Successfully subscribed to track: {}", track_name);
+                                info!(
+                                    "[ResilientTrackConsumer] Successfully subscribed to track: {}",
+                                    track_name
+                                );
                                 *current_consumer.write().await = Some(consumer);
                             }
                             Err(e) => {
-                                debug!("[ResilientTrackConsumer] Subscription failed (will retry): {}", e);
+                                debug!(
+                                    "[ResilientTrackConsumer] Subscription failed (will retry): {}",
+                                    e
+                                );
                             }
                         }
                     }
@@ -259,10 +265,7 @@ impl SubscriptionManager {
         let data_callback = self.data_callback.clone();
 
         let task_handle = tokio::spawn(async move {
-            info!(
-                "Starting callback subscription for track: {}",
-                track_name
-            );
+            info!("Starting callback subscription for track: {}", track_name);
 
             let mut _frame_count = 0;
 

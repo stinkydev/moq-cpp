@@ -84,6 +84,7 @@ struct SessionState {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct TrackHandle {
     producer: Option<TrackProducer>,
     consumer: Option<TrackConsumer>,
@@ -92,6 +93,7 @@ struct TrackHandle {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct BroadcastHandle {
     producer: Option<BroadcastProducer>,
     consumer: Option<BroadcastConsumer>,
@@ -121,18 +123,18 @@ impl MoqSession {
         broadcast_name: String,
     ) -> Result<Self> {
         let mut client_config = config.connection.client_config.clone();
-        
+
         // Force IPv4 binding on Windows to avoid IPv6 issues
         #[cfg(windows)]
         {
             client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
         }
-        
+
         // Also respect the explicit ipv4_only flag
         if config.connection.ipv4_only {
             client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
         }
-        
+
         let client = client_config
             .init()
             .context("Failed to initialize MoQ client")?;
@@ -433,6 +435,7 @@ impl MoqSession {
         Ok(session_handle)
     }
 
+    #[allow(dead_code)]
     async fn setup_publisher_broadcast(_state: Arc<RwLock<SessionState>>) -> Result<()> {
         // This method would be called to setup the broadcast after connection
         // For now, we'll set it up when tracks are actually used
@@ -1249,11 +1252,17 @@ impl ResilientTrackConsumer {
                             .await
                         {
                             Ok(consumer) => {
-                                info!("[ResilientTrackConsumer] Successfully subscribed to track: {}", track_name);
+                                info!(
+                                    "[ResilientTrackConsumer] Successfully subscribed to track: {}",
+                                    track_name
+                                );
                                 *current_consumer.write().await = Some(consumer);
                             }
                             Err(e) => {
-                                debug!("[ResilientTrackConsumer] Subscription failed (will retry): {}", e);
+                                debug!(
+                                    "[ResilientTrackConsumer] Subscription failed (will retry): {}",
+                                    e
+                                );
                             }
                         }
                     }

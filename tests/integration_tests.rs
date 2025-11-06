@@ -59,10 +59,12 @@ async fn test_stream_publisher() {
 
 #[tokio::test]
 async fn test_configuration() {
-    let mut connection_config = ConnectionConfig::default();
-    connection_config.url = url::Url::parse("https://test.example.com/path").unwrap();
-    connection_config.max_reconnect_attempts = 5;
-    connection_config.reconnect_delay = Duration::from_millis(500);
+    let connection_config = ConnectionConfig {
+        url: url::Url::parse("https://test.example.com/path").unwrap(),
+        max_reconnect_attempts: 5,
+        reconnect_delay: Duration::from_millis(500),
+        ..Default::default()
+    };
 
     let session_config = SessionConfig {
         broadcast_name: "test-config".to_string(),

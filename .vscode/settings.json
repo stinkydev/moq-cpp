@@ -1,0 +1,20 @@
+{
+  "rust-analyzer.rustfmt.overrideCommand": [
+    "rustfmt",
+    "--edition=2021"
+  ],
+  "rust-analyzer.checkOnSave.command": "clippy",
+  "rust-analyzer.checkOnSave.allTargets": true,
+  "rust-analyzer.checkOnSave.extraArgs": [
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "[rust]": {
+    "editor.formatOnSave": true
+  },
+  "files.associations": {
+    "*.rs": "rust"
+  },
+  "editor.formatOnSave": true
+}
