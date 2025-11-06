@@ -20,6 +20,9 @@ pub use moq_lite::{
 // Re-export tracing types for logging
 use anyhow::Result;
 pub use tracing::Level;
+use std::sync::Once;
+
+static TRACING_INIT: Once = Once::new();
 
 /// Set the global log level for internal library tracing (optional)
 ///
@@ -39,8 +42,13 @@ pub use tracing::Level;
 /// set_log_level(Level::INFO);
 /// ```
 pub fn set_log_level(log_level: Level) {
-    // Basic tracing initialization - session-specific logging is handled by MoqSession
-    tracing_subscriber::fmt().with_max_level(log_level).init();
+    // Initialize tracing subscriber only once per process to avoid panic
+    // Subsequent calls will be ignored, but this prevents the crash
+    TRACING_INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .init();
+    });
 }
 
 /// Create a quick publisher session with specified tracks and catalog
