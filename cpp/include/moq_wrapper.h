@@ -68,6 +68,14 @@ namespace moq
                     TrackType track_type);
     ~TrackDefinition();
 
+    // Copy constructor and assignment - needed to handle Rust handle properly
+    TrackDefinition(const TrackDefinition &other);
+    TrackDefinition &operator=(const TrackDefinition &other);
+
+    // Move constructor and assignment - for efficiency
+    TrackDefinition(TrackDefinition &&other) noexcept;
+    TrackDefinition &operator=(TrackDefinition &&other) noexcept;
+
     const std::string &name() const { return name_; }
     uint32_t priority() const { return priority_; }
     TrackType track_type() const { return track_type_; }

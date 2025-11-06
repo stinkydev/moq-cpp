@@ -91,6 +91,70 @@ namespace moq
     }
   }
 
+  // Copy constructor - creates a new Rust handle
+  TrackDefinition::TrackDefinition(const TrackDefinition &other)
+      : name_(other.name_), priority_(other.priority_), track_type_(other.track_type_)
+  {
+    // Create a new Rust handle for the copy
+    handle_ = moq_track_definition_new(name_.c_str(), priority_,
+                                       static_cast<int>(track_type_));
+  }
+
+  // Copy assignment operator
+  TrackDefinition &TrackDefinition::operator=(const TrackDefinition &other)
+  {
+    if (this != &other)
+    {
+      // Free existing handle
+      if (handle_)
+      {
+        moq_track_definition_free(handle_);
+      }
+
+      // Copy data
+      name_ = other.name_;
+      priority_ = other.priority_;
+      track_type_ = other.track_type_;
+
+      // Create new Rust handle
+      handle_ = moq_track_definition_new(name_.c_str(), priority_,
+                                         static_cast<int>(track_type_));
+    }
+    return *this;
+  }
+
+  // Move constructor - transfers ownership of Rust handle
+  TrackDefinition::TrackDefinition(TrackDefinition &&other) noexcept
+      : name_(std::move(other.name_)), priority_(other.priority_),
+        track_type_(other.track_type_), handle_(other.handle_)
+  {
+    // Take ownership of handle
+    other.handle_ = nullptr;
+  }
+
+  // Move assignment operator
+  TrackDefinition &TrackDefinition::operator=(TrackDefinition &&other) noexcept
+  {
+    if (this != &other)
+    {
+      // Free existing handle
+      if (handle_)
+      {
+        moq_track_definition_free(handle_);
+      }
+
+      // Move data
+      name_ = std::move(other.name_);
+      priority_ = other.priority_;
+      track_type_ = other.track_type_;
+      handle_ = other.handle_;
+
+      // Take ownership
+      other.handle_ = nullptr;
+    }
+    return *this;
+  }
+
   void SetLogLevel(LogLevel log_level)
   {
     // Set global tracing level for internal library diagnostics
