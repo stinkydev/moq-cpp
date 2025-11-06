@@ -120,10 +120,20 @@ impl MoqSession {
         session_type: SessionType,
         broadcast_name: String,
     ) -> Result<Self> {
-        let client = config
-            .connection
-            .client_config
-            .clone()
+        let mut client_config = config.connection.client_config.clone();
+        
+        // Force IPv4 binding on Windows to avoid IPv6 issues
+        #[cfg(windows)]
+        {
+            client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
+        }
+        
+        // Also respect the explicit ipv4_only flag
+        if config.connection.ipv4_only {
+            client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
+        }
+        
+        let client = client_config
             .init()
             .context("Failed to initialize MoQ client")?;
 
@@ -928,7 +938,7 @@ impl MoqSession {
             *subscription_manager = None;
         }
 
-        info!("✅ Session closed successfully");
+        info!("Session closed successfully");
         Ok(())
     }
 
@@ -948,7 +958,7 @@ impl MoqSession {
         }
 
         info!(
-            "🔄 Auto-subscribing to {} requested tracks",
+            "Auto-subscribing to {} requested tracks",
             requested_tracks.len()
         );
 
@@ -959,7 +969,7 @@ impl MoqSession {
                 .await
             {
                 Ok(()) => {
-                    info!("✅ Auto-subscribed to track: {}", track_def.name);
+                    info!("Auto-subscribed to track: {}", track_def.name);
                 }
                 Err(e) => {
                     warn!(
@@ -997,13 +1007,13 @@ impl MoqSession {
         if let SessionType::Subscriber = self.session_type {
             if let Some(origin_consumer) = &session_handle.origin_consumer {
                 debug!(
-                    "🔍 [MoqSession] Calling consume_broadcast on OriginConsumer for: {}",
+                    "[MoqSession] Calling consume_broadcast on OriginConsumer for: {}",
                     broadcast_name
                 );
                 match origin_consumer.consume_broadcast(broadcast_name) {
                     Some(broadcast_consumer) => {
                         debug!(
-                            "✅ [MoqSession] Successfully consumed broadcast: {}",
+                            "[MoqSession] Successfully consumed broadcast: {}",
                             broadcast_name
                         );
                         Ok(broadcast_consumer)
@@ -1059,7 +1069,7 @@ impl MoqSession {
         track_name: &str,
     ) -> Result<TrackConsumer> {
         debug!(
-            "🎯 [MoqSession] subscribe_track_internal called for track: {} in broadcast: {}",
+            "[MoqSession] subscribe_track_internal called for track: {} in broadcast: {}",
             track_name, broadcast_name
         );
 
@@ -1073,18 +1083,18 @@ impl MoqSession {
             // First, validate against catalog
             self.validate_track_against_catalog(track_name).await?;
             debug!(
-                "✅ [MoqSession] Catalog validation passed for track: {}",
+                "[MoqSession] Catalog validation passed for track: {}",
                 track_name
             );
         }
 
         debug!(
-            "📡 [MoqSession] Calling subscribe_broadcast for: {}",
+            "[MoqSession] Calling subscribe_broadcast for: {}",
             broadcast_name
         );
         let broadcast = self.subscribe_broadcast(broadcast_name).await?;
         debug!(
-            "✅ [MoqSession] Successfully got broadcast: {}",
+            "[MoqSession] Successfully got broadcast: {}",
             broadcast_name
         );
 
@@ -1100,7 +1110,7 @@ impl MoqSession {
         let track_consumer = broadcast.subscribe_track(&track);
 
         info!(
-            "✅ [MoqSession] Subscribed to track: {} in broadcast: {}",
+            "[MoqSession] Subscribed to track: {} in broadcast: {}",
             track_name, broadcast_name
         );
         Ok(track_consumer)
@@ -1215,14 +1225,14 @@ impl ResilientTrackConsumer {
 
             tokio::spawn(async move {
                 info!(
-                    "🎧 [ResilientTrackConsumer] Starting subscription manager for broadcast: {}",
+                    "[ResilientTrackConsumer] Starting subscription manager for broadcast: {}",
                     broadcast_name
                 );
 
                 loop {
                     // Step 1: Wait for session to be connected
                     while !session.is_connected().await {
-                        debug!("⏳ [ResilientTrackConsumer] Waiting for session connection...");
+                        debug!("[ResilientTrackConsumer] Waiting for session connection...");
                         sleep(Duration::from_millis(500)).await;
                     }
 
@@ -1239,11 +1249,11 @@ impl ResilientTrackConsumer {
                             .await
                         {
                             Ok(consumer) => {
-                                info!("✅ [ResilientTrackConsumer] Successfully subscribed to track: {}", track_name);
+                                info!("[ResilientTrackConsumer] Successfully subscribed to track: {}", track_name);
                                 *current_consumer.write().await = Some(consumer);
                             }
                             Err(e) => {
-                                debug!("⏳ [ResilientTrackConsumer] Subscription failed (will retry): {}", e);
+                                debug!("[ResilientTrackConsumer] Subscription failed (will retry): {}", e);
                             }
                         }
                     }
@@ -1262,7 +1272,7 @@ impl ResilientTrackConsumer {
 
             tokio::spawn(async move {
                 info!(
-                    "📡 [ResilientTrackConsumer] Starting broadcast announcement listener for: {}",
+                    "[ResilientTrackConsumer] Starting broadcast announcement listener for: {}",
                     broadcast_name
                 );
 
@@ -1272,17 +1282,17 @@ impl ResilientTrackConsumer {
                     match announcement_rx.recv().await {
                         Ok(announced_broadcast) => {
                             if announced_broadcast == broadcast_name {
-                                info!("🔄 [ResilientTrackConsumer] Broadcast '{}' announced - resetting consumer for fresh connection", broadcast_name);
+                                info!("[ResilientTrackConsumer] Broadcast '{}' announced - resetting consumer for fresh connection", broadcast_name);
 
                                 // Immediately clear the current consumer to force a new subscription
                                 *current_consumer.write().await = None;
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!("📡 [ResilientTrackConsumer] Announcement listener lagged, skipped {} messages", skipped);
+                            warn!("[ResilientTrackConsumer] Announcement listener lagged, skipped {} messages", skipped);
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            debug!("📡 [ResilientTrackConsumer] Announcement channel closed, exiting listener");
+                            debug!("[ResilientTrackConsumer] Announcement channel closed, exiting listener");
                             break;
                         }
                     }
@@ -1310,7 +1320,7 @@ impl ResilientTrackConsumer {
                     }
                     Ok(None) => {
                         // Stream ended normally - clear consumer and wait for reconnection
-                        warn!("📡 [ResilientTrackConsumer] Track stream ended (Ok(None)), clearing consumer");
+                        warn!("[ResilientTrackConsumer] Track stream ended (Ok(None)), clearing consumer");
                         *consumer_guard = None;
                         drop(consumer_guard); // Release lock before sleeping
                                               // Sleep briefly before retrying
@@ -1320,7 +1330,7 @@ impl ResilientTrackConsumer {
                     Err(e) => {
                         // Error occurred - clear consumer and wait for reconnection
                         warn!(
-                            "💥 [ResilientTrackConsumer] Track stream error: {}, clearing consumer",
+                            "[ResilientTrackConsumer] Track stream error: {}, clearing consumer",
                             e
                         );
                         *consumer_guard = None;

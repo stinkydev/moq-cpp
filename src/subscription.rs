@@ -59,14 +59,14 @@ impl ResilientTrackConsumer {
 
             tokio::spawn(async move {
                 info!(
-                    "🎧 [ResilientTrackConsumer] Starting subscription manager for broadcast: {}",
+                    "[ResilientTrackConsumer] Starting subscription manager for broadcast: {}",
                     broadcast_name
                 );
 
                 loop {
                     // Step 1: Wait for session to be connected
                     while !session.is_connected().await {
-                        debug!("⏳ [ResilientTrackConsumer] Waiting for session connection...");
+                        debug!("[ResilientTrackConsumer] Waiting for session connection...");
                         sleep(Duration::from_millis(500)).await;
                     }
 
@@ -83,11 +83,11 @@ impl ResilientTrackConsumer {
                             .await
                         {
                             Ok(consumer) => {
-                                info!("✅ [ResilientTrackConsumer] Successfully subscribed to track: {}", track_name);
+                                info!("[ResilientTrackConsumer] Successfully subscribed to track: {}", track_name);
                                 *current_consumer.write().await = Some(consumer);
                             }
                             Err(e) => {
-                                debug!("⏳ [ResilientTrackConsumer] Subscription failed (will retry): {}", e);
+                                debug!("[ResilientTrackConsumer] Subscription failed (will retry): {}", e);
                             }
                         }
                     }
@@ -106,7 +106,7 @@ impl ResilientTrackConsumer {
 
             tokio::spawn(async move {
                 info!(
-                    "📡 [ResilientTrackConsumer] Starting broadcast announcement listener for: {}",
+                    "[ResilientTrackConsumer] Starting broadcast announcement listener for: {}",
                     broadcast_name
                 );
 
@@ -116,17 +116,17 @@ impl ResilientTrackConsumer {
                     match announcement_rx.recv().await {
                         Ok(announced_broadcast) => {
                             if announced_broadcast == broadcast_name {
-                                info!("🔄 [ResilientTrackConsumer] Broadcast '{}' announced - resetting consumer for fresh connection", broadcast_name);
+                                info!("[ResilientTrackConsumer] Broadcast '{}' announced - resetting consumer for fresh connection", broadcast_name);
 
                                 // Immediately clear the current consumer to force a new subscription
                                 *current_consumer.write().await = None;
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!("📡 [ResilientTrackConsumer] Announcement listener lagged, skipped {} messages", skipped);
+                            warn!("[ResilientTrackConsumer] Announcement listener lagged, skipped {} messages", skipped);
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            debug!("📡 [ResilientTrackConsumer] Announcement channel closed, exiting listener");
+                            debug!("[ResilientTrackConsumer] Announcement channel closed, exiting listener");
                             break;
                         }
                     }
@@ -154,7 +154,7 @@ impl ResilientTrackConsumer {
                     }
                     Ok(None) => {
                         // Stream ended normally - clear consumer and wait for reconnection
-                        warn!("📡 [ResilientTrackConsumer] Track stream ended (Ok(None)), clearing consumer");
+                        warn!("[ResilientTrackConsumer] Track stream ended (Ok(None)), clearing consumer");
                         *consumer_guard = None;
                         drop(consumer_guard); // Release lock before sleeping
                                               // Sleep briefly before retrying
@@ -164,7 +164,7 @@ impl ResilientTrackConsumer {
                     Err(e) => {
                         // Error occurred - clear consumer and wait for reconnection
                         warn!(
-                            "💥 [ResilientTrackConsumer] Track stream error: {}, clearing consumer",
+                            "[ResilientTrackConsumer] Track stream error: {}, clearing consumer",
                             e
                         );
                         *consumer_guard = None;
@@ -260,7 +260,7 @@ impl SubscriptionManager {
 
         let task_handle = tokio::spawn(async move {
             info!(
-                "🎯 Starting callback subscription for track: {}",
+                "Starting callback subscription for track: {}",
                 track_name
             );
 
@@ -303,7 +303,7 @@ impl SubscriptionManager {
                     Ok(None) => {
                         // This should not happen with ResilientTrackConsumer as it should handle reconnections
                         warn!(
-                            "📥 ResilientTrackConsumer returned None for track: {}",
+                            "ResilientTrackConsumer returned None for track: {}",
                             track_name
                         );
                         sleep(Duration::from_millis(1000)).await;
@@ -311,7 +311,7 @@ impl SubscriptionManager {
                     Err(e) => {
                         // This should not happen with ResilientTrackConsumer as it should handle errors internally
                         warn!(
-                            "💥 ResilientTrackConsumer returned error for track {}: {}",
+                            "ResilientTrackConsumer returned error for track {}: {}",
                             track_name, e
                         );
                         sleep(Duration::from_millis(1000)).await;
@@ -340,7 +340,7 @@ impl SubscriptionManager {
             task.abort();
         }
 
-        info!("✅ SubscriptionManager shutdown complete");
+        info!("SubscriptionManager shutdown complete");
         Ok(())
     }
 

@@ -37,18 +37,30 @@ pub struct ConnectionConfig {
     /// Maximum delay between reconnection attempts (for exponential backoff)
     pub max_reconnect_delay: Duration,
 
+    /// Force IPv4-only connections (Windows compatibility)
+    pub ipv4_only: bool,
+
     /// Client configuration for the underlying moq-native client
     pub client_config: moq_native::ClientConfig,
 }
 
 impl Default for ConnectionConfig {
     fn default() -> Self {
+        let mut client_config = moq_native::ClientConfig::default();
+        
+        // Force IPv4 binding on Windows to avoid IPv6 issues
+        #[cfg(windows)]
+        {
+            client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
+        }
+        
         Self {
             url: url::Url::parse("https://relay.moq.dev/anon").unwrap(),
             max_reconnect_attempts: 0, // Infinite reconnection attempts
             reconnect_delay: Duration::from_millis(500), // Faster initial reconnection
             max_reconnect_delay: Duration::from_secs(10), // Shorter max delay for better responsiveness
-            client_config: moq_native::ClientConfig::default(),
+            ipv4_only: cfg!(windows), // Default to IPv4-only on Windows
+            client_config,
         }
     }
 }
