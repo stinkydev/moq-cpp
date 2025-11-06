@@ -7,7 +7,7 @@ pub mod track;
 
 pub use catalog::{Catalog, CatalogType, HangCatalog, SesameCatalog, TrackDefinition, TrackType};
 pub use config::{ConnectionConfig, SessionConfig, WrapperError};
-pub use session::{ConnectionInfo, MoqSession, SessionEvent, SessionType};
+pub use session::{ConnectionInfo, MoqSession, SessionEvent, SessionLogCallback, SessionType};
 pub use subscription::{DataCallback, SubscriptionManager};
 pub use track::{StreamPublisher, TrackManager};
 
@@ -20,99 +20,30 @@ pub use moq_lite::{
 // Re-export tracing types for logging
 use anyhow::Result;
 pub use tracing::Level;
-use tracing_subscriber::Layer;
 
-/// Log callback function type
-pub type LogCallback = Box<dyn Fn(&str, Level, &str) + Send + Sync>;
-
-/// Initialize the moq-wrapper library with logging configuration
+/// Set the global log level for internal library tracing (optional)
+///
+/// This initializes the global tracing subscriber for internal library diagnostics.
+/// Session-specific logging is handled separately via MoqSession::set_log_callback().
+/// This function is optional - the library works fine without it.
 ///
 /// # Arguments
 /// * `log_level` - The maximum log level to display (DEBUG, INFO, WARN, ERROR)
-/// * `log_callback` - Optional custom log callback. If None, uses default console logging
 ///
 /// # Example
 /// ```rust
-/// use moq_wrapper::init;
+/// use moq_wrapper::set_log_level;
 /// use tracing::Level;
 ///
-/// // Initialize with INFO level and default console logging
-/// init(Level::INFO, None);
-///
-/// // Or with a custom callback
-/// init(Level::DEBUG, Some(Box::new(|target, level, message| {
-///     println!("[{}] {}: {}", level, target, message);
-/// })));
+/// // Set global logging to INFO level (optional)
+/// set_log_level(Level::INFO);
 /// ```
-pub fn init(log_level: Level, log_callback: Option<LogCallback>) {
-    if let Some(callback) = log_callback {
-        // Custom callback subscriber
-        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
-
-        let callback_layer = CallbackLayer::new(callback);
-
-        tracing_subscriber::registry()
-            .with(
-                callback_layer.with_filter(tracing_subscriber::filter::LevelFilter::from_level(
-                    log_level,
-                )),
-            )
-            .init();
-    } else {
-        // Default console logging
-        tracing_subscriber::fmt().with_max_level(log_level).init();
-    }
+pub fn set_log_level(log_level: Level) {
+    // Basic tracing initialization - session-specific logging is handled by MoqSession
+    tracing_subscriber::fmt().with_max_level(log_level).init();
 }
 
-// Custom tracing layer for log callbacks
-struct CallbackLayer {
-    callback: LogCallback,
-}
 
-impl CallbackLayer {
-    fn new(callback: LogCallback) -> Self {
-        Self { callback }
-    }
-}
-
-impl<S> Layer<S> for CallbackLayer
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        let metadata = event.metadata();
-        let target = metadata.target();
-        let level = *metadata.level();
-
-        // Extract the message from the event
-        let mut visitor = MessageVisitor::default();
-        event.record(&mut visitor);
-
-        (self.callback)(target, level, &visitor.message);
-    }
-}
-
-// Visitor to extract message from tracing events
-#[derive(Default)]
-struct MessageVisitor {
-    message: String,
-}
-
-impl tracing::field::Visit for MessageVisitor {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = format!("{:?}", value);
-            // Remove quotes from debug output
-            if self.message.starts_with('"') && self.message.ends_with('"') {
-                self.message = self.message[1..self.message.len() - 1].to_string();
-            }
-        }
-    }
-}
 
 /// Create a quick publisher session with specified tracks and catalog
 pub async fn create_publisher(

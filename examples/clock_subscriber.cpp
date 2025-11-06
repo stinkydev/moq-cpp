@@ -1,7 +1,9 @@
 #include "moq_wrapper.h"
 
+#include <atomic>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,8 +57,131 @@ namespace
 
 } // namespace
 
+// Session management thread function
+void SessionManagerThread(const std::string &url, const std::string &broadcast,
+                          std::shared_ptr<moq::Session> &session, std::atomic<bool> &session_ready,
+                          std::atomic<bool> &should_stop)
+{
+  // Define the tracks we want to subscribe to
+  std::vector<moq::TrackDefinition> tracks;
+  tracks.emplace_back("clock", 0, moq::TrackType::kData);
+  tracks.emplace_back("clock2", 0, moq::TrackType::kData);
+
+  std::cout << "[SESSION] Created track definitions:" << std::endl;
+  for (size_t i = 0; i < tracks.size(); ++i)
+  {
+    std::cout << "  [" << i << "] '" << tracks[i].name() << "'" << std::endl;
+  }
+
+  std::cout << "[SESSION] Creating subscriber session..." << std::endl;
+  session = moq::Session::CreateSubscriber(url, broadcast, tracks, moq::CatalogType::kHang);
+
+  if (!session)
+  {
+    std::cerr << "[SESSION] Failed to create subscriber session" << std::endl;
+    should_stop = true;
+    return;
+  }
+
+  // Set session-specific log callback
+  session->SetLogCallback(LogCallback);
+
+  // Set up data callback
+  if (!session->SetDataCallback(DataCallback))
+  {
+    std::cerr << "[SESSION] Failed to set data callback" << std::endl;
+    should_stop = true;
+    return;
+  }
+
+  // Wait for connection
+  std::cout << "[SESSION] Connecting..." << std::endl;
+  while (!session->IsConnected() && !should_stop)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  if (!should_stop)
+  {
+    std::cout << "[SESSION] Connected! Waiting for data..." << std::endl;
+    session_ready = true;
+  }
+
+  // Keep session alive and monitor connection
+  while (!should_stop)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    if (session && !session->IsConnected())
+    {
+      std::cout << "[SESSION] Connection lost!" << std::endl;
+      session_ready = false;
+      // In a real implementation, we'd handle reconnection here
+      break;
+    }
+  }
+
+  std::cout << "[SESSION] Shutting down session..." << std::endl;
+  if (session)
+  {
+    session->Close();
+  }
+}
+
+// Data monitoring thread function
+void DataMonitorThread(std::shared_ptr<moq::Session> &session,
+                       std::atomic<bool> &session_ready, std::atomic<bool> &should_stop)
+{
+  std::cout << "[MONITOR] Waiting for session to be ready..." << std::endl;
+
+  // Wait for session to be ready
+  while (!session_ready && !should_stop)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  if (should_stop)
+  {
+    return;
+  }
+
+  std::cout << "[MONITOR] Session ready, monitoring for data..." << std::endl;
+  std::cout << "[MONITOR] Listening for clock data..." << std::endl;
+
+  // Monitor session status and provide periodic updates
+  auto last_status_update = std::chrono::steady_clock::now();
+
+  while (!should_stop && session_ready)
+  {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_status_update).count();
+
+    // Print status update every 30 seconds
+    if (elapsed >= 30)
+    {
+      if (session && session->IsConnected())
+      {
+        std::cout << "[MONITOR] Status: Connected and listening..." << std::endl;
+      }
+      else
+      {
+        std::cout << "[MONITOR] Status: Disconnected" << std::endl;
+        session_ready = false;
+      }
+      last_status_update = now;
+    }
+  }
+
+  std::cout << "[MONITOR] Data monitoring thread stopping..." << std::endl;
+}
+
 int main(int argc, char *argv[])
 {
+  // Set up global logging for library diagnostics (optional)
+  moq::SetLogLevel(moq::LogLevel::kInfo);
+
   // Parse command line arguments
   std::string url = "https://relay1.moq.sesame-streams.com:4433";
   std::string broadcast = "clock-cpp";
@@ -70,60 +195,39 @@ int main(int argc, char *argv[])
     broadcast = argv[2];
   }
 
-  std::cout << "MOQ Clock Subscriber (C++)" << std::endl;
+  std::cout << "MOQ Clock Subscriber (C++) - Multi-threaded Version" << std::endl;
   std::cout << "Connecting to: " << url << std::endl;
   std::cout << "Subscribing to: " << broadcast << std::endl;
 
-  // Initialize MOQ library with custom logging
-  moq::Init(moq::LogLevel::kInfo, LogCallback);
+  // Shared state between threads
+  std::shared_ptr<moq::Session> session;
+  std::atomic<bool> session_ready{false};
+  std::atomic<bool> should_stop{false};
 
-  // Define the tracks we want to subscribe to
-  std::vector<moq::TrackDefinition> tracks;
-  tracks.emplace_back("clock", 0, moq::TrackType::kData);
+  // Start session management thread
+  std::thread session_thread(SessionManagerThread, std::ref(url), std::ref(broadcast),
+                             std::ref(session), std::ref(session_ready), std::ref(should_stop));
 
-  // Create subscriber session
-  auto session = moq::Session::CreateSubscriber(url, broadcast, tracks,
-                                                moq::CatalogType::kHang);
-  if (!session)
+  // Start data monitoring thread
+  std::thread monitor_thread(DataMonitorThread, std::ref(session),
+                             std::ref(session_ready), std::ref(should_stop));
+
+  std::cout << "Press Enter to stop..." << std::endl;
+  std::cin.get();
+
+  // Signal threads to stop
+  should_stop = true;
+
+  // Wait for threads to complete
+  if (session_thread.joinable())
   {
-    std::cerr << "Failed to create subscriber session" << std::endl;
-    return 1;
+    session_thread.join();
+  }
+  if (monitor_thread.joinable())
+  {
+    monitor_thread.join();
   }
 
-  // Set up data callback
-  if (!session->SetDataCallback(DataCallback))
-  {
-    std::cerr << "Failed to set data callback" << std::endl;
-    return 1;
-  }
-
-  // Wait for connection
-  std::cout << "Connecting..." << std::endl;
-  while (!session->IsConnected())
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-  std::cout << "Connected! Waiting for data..." << std::endl;
-
-  // Keep running and receiving data
-  std::cout << "Listening for clock data (press Ctrl+C to stop)..." << std::endl;
-
-  while (true)
-  {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    // Check if still connected
-    if (!session->IsConnected())
-    {
-      std::cout << "Connection lost. Attempting to reconnect..." << std::endl;
-      // In a real implementation, we'd handle reconnection here
-      break;
-    }
-  }
-
-  // Clean shutdown
-  std::cout << "Shutting down..." << std::endl;
-  session->Close();
-
+  std::cout << "Application shutdown complete." << std::endl;
   return 0;
 }
