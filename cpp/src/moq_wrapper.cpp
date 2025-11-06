@@ -3,19 +3,30 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+
+// C-compatible track definition structure
+struct TrackDefinitionFFI
+{
+  const char *name;
+  uint32_t priority;
+  uint8_t track_type;
+};
 
 // Forward declarations for C FFI functions
 extern "C"
 {
-  void moq_init(int log_level, void (*log_callback)(const char *, int, const char *));
+  void moq_set_log_level(int log_level, void (*log_callback)(const char *, int, const char *));
   void *moq_track_definition_new(const char *name, uint32_t priority, int track_type);
   void moq_track_definition_free(void *track_def);
   void *moq_create_publisher(const char *url, const char *broadcast_name,
-                             void **tracks, size_t track_count, int catalog_type);
+                             const TrackDefinitionFFI *tracks, size_t track_count, int catalog_type);
   void *moq_create_subscriber(const char *url, const char *broadcast_name,
-                              void **tracks, size_t track_count, int catalog_type);
-  int moq_set_data_callback(void *session,
-                            void (*callback)(const char *, const uint8_t *, size_t));
+                              const TrackDefinitionFFI *tracks, size_t track_count, int catalog_type);
+  int moq_session_set_data_callback(void *session,
+                                    void (*callback)(void *, const char *, const uint8_t *, size_t));
   int moq_write_single_frame(void *session, const char *track_name,
                              const uint8_t *data, size_t data_len);
   int moq_write_frame(void *session, const char *track_name,
@@ -31,16 +42,19 @@ namespace moq
 
   namespace
   {
-    // Global log callback storage
+    // Thread-safe global log callback storage
+    std::mutex g_callback_mutex;
     LogCallback g_log_callback;
 
-    // Global data callback storage for each session
-    std::map<void *, DataCallback> g_data_callbacks;
+    // Session-specific data callback storage
+    std::unordered_map<void *, Session *> g_session_map;
+    std::mutex g_session_map_mutex;
 
-    // C wrapper for log callback
+    // Thread-safe C wrapper for log callback
     extern "C" void LogCallbackWrapper(const char *target, int level,
                                        const char *message)
     {
+      std::lock_guard<std::mutex> lock(g_callback_mutex);
       if (g_log_callback)
       {
         g_log_callback(std::string(target), static_cast<LogLevel>(level),
@@ -77,28 +91,30 @@ namespace moq
     }
   }
 
-  void Init(LogLevel log_level)
+  void SetLogLevel(LogLevel log_level)
   {
-    // Note: Log callbacks are now set on individual Session instances
-    moq_init(static_cast<int>(log_level), nullptr);
+    // Set global tracing level for internal library diagnostics
+    moq_set_log_level(static_cast<int>(log_level), nullptr);
   }
 
   std::unique_ptr<Session> Session::CreatePublisher(
       const std::string &url, const std::string &broadcast_name,
       const std::vector<TrackDefinition> &tracks, CatalogType catalog_type)
   {
-    // Prepare track handles
-    std::vector<void *> track_handles;
-    track_handles.reserve(tracks.size());
+    // Prepare FFI track definitions
+    std::vector<TrackDefinitionFFI> ffi_tracks;
+    ffi_tracks.reserve(tracks.size());
     for (const auto &track : tracks)
     {
-      track_handles.push_back(track.GetHandle());
+      ffi_tracks.push_back({track.name().c_str(),
+                            track.priority(),
+                            static_cast<uint8_t>(track.track_type())});
     }
 
     void *handle = moq_create_publisher(
         url.c_str(), broadcast_name.c_str(),
-        track_handles.empty() ? nullptr : track_handles.data(),
-        track_handles.size(), static_cast<int>(catalog_type));
+        ffi_tracks.empty() ? nullptr : ffi_tracks.data(),
+        ffi_tracks.size(), static_cast<int>(catalog_type));
 
     if (!handle)
     {
@@ -112,18 +128,20 @@ namespace moq
       const std::string &url, const std::string &broadcast_name,
       const std::vector<TrackDefinition> &tracks, CatalogType catalog_type)
   {
-    // Prepare track handles
-    std::vector<void *> track_handles;
-    track_handles.reserve(tracks.size());
+    // Prepare FFI track definitions
+    std::vector<TrackDefinitionFFI> ffi_tracks;
+    ffi_tracks.reserve(tracks.size());
     for (const auto &track : tracks)
     {
-      track_handles.push_back(track.GetHandle());
+      ffi_tracks.push_back({track.name().c_str(),
+                            track.priority(),
+                            static_cast<uint8_t>(track.track_type())});
     }
 
     void *handle = moq_create_subscriber(
         url.c_str(), broadcast_name.c_str(),
-        track_handles.empty() ? nullptr : track_handles.data(),
-        track_handles.size(), static_cast<int>(catalog_type));
+        ffi_tracks.empty() ? nullptr : ffi_tracks.data(),
+        ffi_tracks.size(), static_cast<int>(catalog_type));
 
     if (!handle)
     {
@@ -133,13 +151,70 @@ namespace moq
     return std::unique_ptr<Session>(new Session(handle));
   }
 
-  Session::Session(void *handle) : handle_(handle) {}
+  Session::Session(void *handle) : handle_(handle)
+  {
+    // Register this session instance with the handle
+    std::lock_guard<std::mutex> lock(g_session_map_mutex);
+    g_session_map[handle_] = this;
+  }
 
   Session::~Session()
   {
     if (handle_)
     {
+      // Clear the callback first
+      {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        data_callback_.reset();
+      }
+
+      // Unregister from session map
+      {
+        std::lock_guard<std::mutex> lock(g_session_map_mutex);
+        g_session_map.erase(handle_);
+      }
+
+      // Close the session first to ensure proper cleanup
+      moq_close_session(handle_);
+
+      // Small delay to allow cleanup to complete
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+      // Free the session
       moq_session_free(handle_);
+    }
+  }
+
+  // Session-specific data callback wrapper
+  extern "C" void SessionDataCallbackWrapper(void *ffi_session_ptr, const char *track, const uint8_t *data, size_t size)
+  {
+    if (!ffi_session_ptr)
+      return;
+
+    Session *session = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(g_session_map_mutex);
+      auto it = g_session_map.find(ffi_session_ptr);
+      if (it != g_session_map.end())
+      {
+        session = it->second;
+      }
+    }
+
+    if (session && session->data_callback_)
+    {
+      try
+      {
+        (*session->data_callback_)(std::string(track), data, size);
+      }
+      catch (const std::exception &e)
+      {
+        std::cerr << "Exception in data callback: " << e.what() << std::endl;
+      }
+      catch (...)
+      {
+        std::cerr << "Unknown exception in data callback" << std::endl;
+      }
     }
   }
 
@@ -150,22 +225,14 @@ namespace moq
       return false;
     }
 
-    // Store the callback globally for this session
-    g_data_callbacks[handle_] = callback;
-
-    // Create a C wrapper that will call our stored callback
-    auto c_callback = [](const char *track, const uint8_t *data, size_t size)
+    // Store the callback in this session instance
     {
-      // Find the session handle - this is a limitation of the current design
-      // In a real implementation, you'd pass the session handle through the callback
-      for (const auto &pair : g_data_callbacks)
-      {
-        // For now, we'll call all callbacks - this should be improved
-        pair.second(std::string(track), data, size);
-      }
-    };
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      data_callback_ = std::make_unique<DataCallback>(callback);
+    }
 
-    return moq_set_data_callback(handle_, c_callback) == 0;
+    // Set the session-specific callback function, passing 'this' as context
+    return moq_session_set_data_callback(handle_, SessionDataCallbackWrapper) == 0;
   }
 
   bool Session::SetLogCallback(const LogCallback &callback)
@@ -175,8 +242,11 @@ namespace moq
       return false;
     }
 
-    // Store the callback globally for this session
-    g_log_callback = callback;
+    // Thread-safe storage of the callback
+    {
+      std::lock_guard<std::mutex> lock(g_callback_mutex);
+      g_log_callback = callback;
+    }
 
     if (callback)
     {

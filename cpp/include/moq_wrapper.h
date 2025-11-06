@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -81,9 +82,14 @@ namespace moq
     void *handle_;
   };
 
+  /// Forward declaration for friend function
+  extern "C" void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
+
   /// MOQ Session wrapper
   class MOQ_API Session
   {
+    friend void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
+
   public:
     /// Create a publisher session
     static std::unique_ptr<Session> CreatePublisher(
@@ -127,13 +133,15 @@ namespace moq
     explicit Session(void *handle);
 
     void *handle_;
+    std::mutex callback_mutex_;
     std::unique_ptr<DataCallback> data_callback_;
   };
 
-  /// Initialize the MOQ library
-  /// @param log_level The log level for the library
-  /// Note: Log callbacks are now set on individual Session instances
-  MOQ_API void Init(LogLevel log_level);
+  /// Set the global log level for internal library tracing (optional)
+  /// This configures global tracing for internal diagnostics.
+  /// Session-specific logging is handled via Session::SetLogCallback().
+  /// @param log_level The log level for internal library tracing
+  MOQ_API void SetLogLevel(LogLevel log_level);
 
 } // namespace moq
 

@@ -21,20 +21,24 @@ pub use moq_lite::{
 use anyhow::Result;
 pub use tracing::Level;
 
-/// Initialize the moq-wrapper library with basic tracing
+/// Set the global log level for internal library tracing (optional)
+///
+/// This initializes the global tracing subscriber for internal library diagnostics.
+/// Session-specific logging is handled separately via MoqSession::set_log_callback().
+/// This function is optional - the library works fine without it.
 ///
 /// # Arguments
 /// * `log_level` - The maximum log level to display (DEBUG, INFO, WARN, ERROR)
 ///
 /// # Example
 /// ```rust
-/// use moq_wrapper::init;
+/// use moq_wrapper::set_log_level;
 /// use tracing::Level;
 ///
-/// // Initialize with INFO level
-/// init(Level::INFO);
+/// // Set global logging to INFO level (optional)
+/// set_log_level(Level::INFO);
 /// ```
-pub fn init(log_level: Level) {
+pub fn set_log_level(log_level: Level) {
     // Basic tracing initialization - session-specific logging is handled by MoqSession
     tracing_subscriber::fmt().with_max_level(log_level).init();
 }
