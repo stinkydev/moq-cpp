@@ -63,7 +63,7 @@ void SessionManagerThread(const std::string &url, const std::string &broadcast,
   tracks.emplace_back("clock", 0, moq::TrackType::kData);
 
   std::cout << "[SESSION] Creating publisher session..." << std::endl;
-  session = moq::Session::CreatePublisher(url, broadcast, tracks, moq::CatalogType::kHang);
+  session = moq::Session::CreatePublisher(url, broadcast, tracks, moq::CatalogType::kSesame);
 
   if (!session)
   {
@@ -95,10 +95,21 @@ void SessionManagerThread(const std::string &url, const std::string &broadcast,
 
     if (!session->IsConnected())
     {
-      std::cout << "[SESSION] Connection lost!" << std::endl;
-      session_ready = false;
-      // In a real implementation, we'd handle reconnection here
-      break;
+      if (session_ready)
+      {
+        std::cout << "[SESSION] Connection lost! Waiting for reconnection..." << std::endl;
+        session_ready = false;
+      }
+      // Don't break - let the session attempt to reconnect
+      // The Rust layer handles automatic reconnection
+    }
+    else
+    {
+      if (!session_ready)
+      {
+        std::cout << "[SESSION] Reconnected!" << std::endl;
+        session_ready = true;
+      }
     }
   }
 
@@ -138,8 +149,7 @@ void DataPublishThread(std::shared_ptr<moq::Session> &session,
     auto now = std::chrono::system_clock::now();
     auto current_minute = std::chrono::system_clock::to_time_t(now) / 60;
 
-    // Check if we've entered a new minute
-    bool new_group = (current_minute != last_minute);
+    bool new_group = true;
     if (new_group)
     {
       std::cout << "[DATA] === NEW MINUTE: Starting new group ===" << std::endl;
@@ -151,15 +161,23 @@ void DataPublishThread(std::shared_ptr<moq::Session> &session,
               << ", frame " << frame_count++ << ")" << std::endl;
 
     // Write frame, starting new group if it's a new minute
-    if (session && !session->WriteFrame("clock",
-                                        reinterpret_cast<const uint8_t *>(current_time.c_str()),
-                                        current_time.length(),
-                                        new_group))
+    if (session && session_ready)
     {
-      std::cerr << "[DATA] Failed to write frame" << std::endl;
+      if (!session->WriteFrame("clock",
+                               reinterpret_cast<const uint8_t *>(current_time.c_str()),
+                               current_time.length(),
+                               new_group))
+      {
+        std::cerr << "[DATA] Failed to write frame (connection may be down)" << std::endl;
+      }
+    }
+    else if (session && !session_ready)
+    {
+      std::cout << "[DATA] Waiting for connection to be ready..." << std::endl;
     }
 
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    // std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 
   std::cout << "[DATA] Data publishing thread stopping..." << std::endl;

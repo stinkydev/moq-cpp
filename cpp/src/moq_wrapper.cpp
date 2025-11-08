@@ -166,11 +166,16 @@ namespace moq
       const std::vector<TrackDefinition> &tracks, CatalogType catalog_type)
   {
     // Prepare FFI track definitions
+    // Keep strings alive by storing them separately
+    std::vector<std::string> track_names;
     std::vector<TrackDefinitionFFI> ffi_tracks;
+    track_names.reserve(tracks.size());
     ffi_tracks.reserve(tracks.size());
+
     for (const auto &track : tracks)
     {
-      ffi_tracks.push_back({track.name().c_str(),
+      track_names.push_back(track.name());
+      ffi_tracks.push_back({track_names.back().c_str(),
                             track.priority(),
                             static_cast<uint8_t>(track.track_type())});
     }
@@ -193,11 +198,16 @@ namespace moq
       const std::vector<TrackDefinition> &tracks, CatalogType catalog_type)
   {
     // Prepare FFI track definitions
+    // Keep strings alive by storing them separately
+    std::vector<std::string> track_names;
     std::vector<TrackDefinitionFFI> ffi_tracks;
+    track_names.reserve(tracks.size());
     ffi_tracks.reserve(tracks.size());
+
     for (const auto &track : tracks)
     {
-      ffi_tracks.push_back({track.name().c_str(),
+      track_names.push_back(track.name());
+      ffi_tracks.push_back({track_names.back().c_str(),
                             track.priority(),
                             static_cast<uint8_t>(track.track_type())});
     }

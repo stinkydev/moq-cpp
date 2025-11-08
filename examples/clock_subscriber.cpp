@@ -74,7 +74,7 @@ void SessionManagerThread(const std::string &url, const std::string &broadcast,
   }
 
   std::cout << "[SESSION] Creating subscriber session..." << std::endl;
-  session = moq::Session::CreateSubscriber(url, broadcast, tracks, moq::CatalogType::kHang);
+  session = moq::Session::CreateSubscriber(url, broadcast, tracks, moq::CatalogType::kSesame);
 
   if (!session)
   {

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -607,10 +608,20 @@ impl MoqSession {
                     .write()
                     .await
                     .insert(track_def.name.clone(), track_handle);
+
+                // Generate random starting group sequence number for this track
+                let mut rng = rand::thread_rng();
+                let random_start: u64 = rng.gen_range(1..=10000);
+
                 self.sequence_numbers
                     .write()
                     .await
-                    .insert(track_def.name.clone(), 0);
+                    .insert(track_def.name.clone(), random_start);
+
+                info!(
+                    "Track '{}' initialized with random starting group sequence: {}",
+                    track_def.name, random_start
+                );
 
                 // Add to requested tracks if subscriber
                 if matches!(self.session_type, SessionType::Subscriber) {
@@ -704,14 +715,8 @@ impl MoqSession {
             if let Some(catalog_handle) = tracks.get("catalog.json") {
                 if let Some(track_producer) = &catalog_handle.producer {
                     let mut track_producer = track_producer.clone();
-                    if let Some(mut group) = track_producer.create_group(0u32.into()) {
-                        group.write_frame(Bytes::from(catalog_json));
-                        group.close();
-
-                        info!("Published catalog data");
-                    } else {
-                        warn!("Failed to create catalog group - group rejected");
-                    }
+                    track_producer.write_frame(Bytes::from(catalog_json));
+                    info!("Published catalog data");
                 }
             }
         }
