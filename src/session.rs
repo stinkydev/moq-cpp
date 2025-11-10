@@ -287,31 +287,31 @@ impl MoqSession {
                             state_guard.current_session = Some(session_handle.clone());
                         }
 
-                        let _ = event_tx.send(SessionEvent::Connected);
                         reconnect_delay = config.connection.reconnect_delay;
 
                         // Create track producers for publisher sessions on every connection
                         if matches!(session_type, SessionType::Publisher) {
                             let session_for_tracks = session_clone.clone();
-                            tokio::spawn(async move {
-                                // Wait a moment for the connection to stabilize
-                                sleep(Duration::from_millis(500)).await;
-
-                                // Create track producers
-                                if let Err(e) = session_for_tracks.create_track_producers().await {
-                                    warn!("Failed to create track producers: {}", e);
-                                } else {
-                                    info!("Successfully created track producers");
-                                }
-                            });
+                            // Create track producers before sending Connected event
+                            if let Err(e) = session_for_tracks.create_track_producers().await {
+                                warn!("Failed to create track producers: {}", e);
+                                let _ = event_tx.send(SessionEvent::Error {
+                                    error: format!("Failed to create track producers: {}", e),
+                                });
+                            } else {
+                                info!("Successfully created track producers");
+                                // Only send Connected event after track producers are ready
+                                let _ = event_tx.send(SessionEvent::Connected);
+                            }
+                        } else {
+                            // For subscribers, send Connected immediately
+                            let _ = event_tx.send(SessionEvent::Connected);
                         }
 
                         // Auto-subscribe to requested tracks for subscriber sessions
                         if matches!(session_type, SessionType::Subscriber) {
                             let session_for_auto_sub = session_clone.clone();
                             tokio::spawn(async move {
-                                // Wait a moment for the connection to stabilize
-                                sleep(Duration::from_millis(500)).await;
                                 if let Err(e) =
                                     session_for_auto_sub.auto_subscribe_to_tracks().await
                                 {
@@ -1331,7 +1331,7 @@ impl ResilientTrackConsumer {
                     // Step 1: Wait for session to be connected
                     while !session.is_connected().await {
                         debug!("[ResilientTrackConsumer] Waiting for session connection...");
-                        sleep(Duration::from_millis(500)).await;
+                        sleep(Duration::from_millis(100)).await;
                     }
 
                     // Step 2: Check if we have a consumer

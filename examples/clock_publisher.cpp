@@ -137,7 +137,13 @@ void DataPublishThread(std::shared_ptr<moq::Session> &session,
     return;
   }
 
-  std::cout << "[DATA] Session ready, starting data publishing..." << std::endl;
+  std::cout << "[DATA] Session ready, waiting for track producers to be created..." << std::endl;
+
+  // Give additional time for track producers to be created asynchronously
+  // This prevents the "Track producer not available" race condition
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+  std::cout << "[DATA] Starting data publishing..." << std::endl;
   std::cout << "[DATA] Publishing clock data (creating one group per minute with frames every second)" << std::endl;
 
   int frame_count = 0;
@@ -149,7 +155,7 @@ void DataPublishThread(std::shared_ptr<moq::Session> &session,
     auto now = std::chrono::system_clock::now();
     auto current_minute = std::chrono::system_clock::to_time_t(now) / 60;
 
-    bool new_group = true;
+    bool new_group = (current_minute != last_minute);
     if (new_group)
     {
       std::cout << "[DATA] === NEW MINUTE: Starting new group ===" << std::endl;
@@ -186,7 +192,7 @@ void DataPublishThread(std::shared_ptr<moq::Session> &session,
 int main(int argc, char *argv[])
 {
   // Set up global logging for library diagnostics (optional)
-  moq::SetLogLevel(moq::LogLevel::kInfo);
+  moq::SetLogLevel(moq::LogLevel::kDebug);
 
   // Parse command line arguments
   std::string url = "https://relay1.moq.sesame-streams.com:4433";

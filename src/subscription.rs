@@ -272,12 +272,6 @@ impl SubscriptionManager {
             loop {
                 match resilient_consumer.next_group().await {
                     Ok(Some(mut group)) => {
-                        info!(
-                            "📦 [{}] Processing group #{}",
-                            track_name, group.info.sequence
-                        );
-
-                        // Read all frames from this group
                         loop {
                             match group.read_frame().await {
                                 Ok(Some(frame_data)) => {
