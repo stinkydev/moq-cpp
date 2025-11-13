@@ -3,7 +3,7 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{Arc, RwLock};
 use tokio::runtime::Runtime;
-use tracing::Level;
+use tracing::{info, Level};
 
 use crate::{
     close_session, create_publisher, create_subscriber, set_data_callback, set_log_level,
@@ -389,6 +389,7 @@ pub unsafe extern "C" fn moq_session_set_data_callback(
     // Store the callback in the session structure
     if let Ok(mut cb) = session_ref.data_callback.write() {
         *cb = Some(callback);
+        info!("📞 Data callback stored in FFI session");
     }
 
     // Set up the Rust callback that will call the C callback with session context

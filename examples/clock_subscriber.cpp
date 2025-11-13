@@ -81,7 +81,7 @@ void SessionManagerThread(const std::string &url, const std::string &broadcast,
   // Define the tracks we want to subscribe to
   std::vector<moq::TrackDefinition> tracks;
   tracks.emplace_back("clock", 0, moq::TrackType::kData);
-  tracks.emplace_back("clock2", 0, moq::TrackType::kData);
+  tracks.emplace_back("video", 0, moq::TrackType::kData);
 
   std::cout << "[SESSION] Created track definitions:" << std::endl;
   for (size_t i = 0; i < tracks.size(); ++i)
@@ -219,7 +219,7 @@ int main(int argc, char *argv[])
 
   // Parse command line arguments
   std::string url = "https://r1.moq.sesame-streams.com:4433";
-  std::string broadcast = "clock-cpp";
+  std::string broadcast = "peter2";
 
   if (argc > 1)
   {

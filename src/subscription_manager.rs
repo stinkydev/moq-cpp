@@ -72,6 +72,27 @@ impl BroadcastSubscriptionManager {
         F: Fn(String, Vec<u8>) + Send + Sync + 'static,
     {
         *self.track_data_callback.write().await = Some(Arc::new(callback));
+        info!("✅ Data callback set on BroadcastSubscriptionManager");
+    }
+
+    /// Get the current data callback (used for preserving callback during recreation)
+    pub async fn get_data_callback(&self) -> Option<TrackDataCallback> {
+        self.track_data_callback.read().await.clone()
+    }
+
+    /// Set data callback from Arc (used when recreating manager with existing callback)
+    pub async fn set_data_callback_from_arc(&self, callback: TrackDataCallback) {
+        *self.track_data_callback.write().await = Some(callback);
+    }
+
+    /// Get the catalog type (used for preserving configuration during recreation)
+    pub fn get_catalog_type(&self) -> CatalogType {
+        self.catalog_type.clone()
+    }
+
+    /// Get the requested tracks (used for preserving configuration during recreation)
+    pub fn get_requested_tracks(&self) -> Vec<TrackDefinition> {
+        self.requested_tracks.clone()
     }
 
     /// Start the complete subscription flow
@@ -94,10 +115,7 @@ impl BroadcastSubscriptionManager {
                 broadcast_name
             );
 
-            // Step 1: Wait for broadcast announcement
-            Self::wait_for_announcement(&session, &broadcast_name).await;
-
-            // Step 2: Subscribe to catalog if needed (only once per session)
+            // Step 1: Subscribe to catalog if needed (broadcast is already announced and subscribed by session)
             if catalog_type != CatalogType::None {
                 let mut already_subscribed = catalog_subscribed.write().await;
                 if !*already_subscribed {
@@ -116,7 +134,7 @@ impl BroadcastSubscriptionManager {
                 }
             }
 
-            // Step 3: Subscribe to all requested tracks
+            // Step 2: Subscribe to all requested tracks
             Self::manage_track_subscriptions(
                 &session,
                 &broadcast_name,
@@ -129,30 +147,7 @@ impl BroadcastSubscriptionManager {
         });
     }
 
-    /// Wait for the broadcast to be announced
-    async fn wait_for_announcement(session: &MoqSession, broadcast_name: &str) {
-        info!(
-            "[BroadcastSubscriptionManager] Waiting for broadcast announcement: {}",
-            broadcast_name
-        );
 
-        let mut announcement_rx = session.subscribe_announcements();
-
-        while let Ok(announced_broadcast) = announcement_rx.recv().await {
-            if announced_broadcast == *broadcast_name {
-                info!(
-                    "[BroadcastSubscriptionManager] ✅ Broadcast '{}' announced",
-                    broadcast_name
-                );
-                break;
-            } else {
-                debug!(
-                    "[BroadcastSubscriptionManager] Ignoring announcement for: {}",
-                    announced_broadcast
-                );
-            }
-        }
-    }
 
     /// Manage catalog subscription and updates
     async fn manage_catalog_subscription(
@@ -259,20 +254,37 @@ impl BroadcastSubscriptionManager {
                             .insert(track_name.clone(), track_consumer.clone());
 
                         // Monitor track data
+                        {
+                            let callback_guard = callback_clone.read().await;
+                            if callback_guard.is_some() {
+                                info!("[BroadcastSubscriptionManager] 👀 Starting data monitoring for track: {} (callback is set)", track_name);
+                            } else {
+                                warn!("[BroadcastSubscriptionManager] ⚠️ Starting data monitoring for track: {} (NO CALLBACK SET!)", track_name);
+                            }
+                        }
                         while *is_active_clone.read().await {
+                            debug!("[BroadcastSubscriptionManager] 🔍 Waiting for next group on track: {}", track_name);
                             match track_consumer.next_group().await {
                                 Ok(Some(mut group)) => {
+                                    debug!("[BroadcastSubscriptionManager] 📦 Received group for track: {}", track_name);
                                     while let Ok(Some(frame)) = group.read_frame().await {
+                                        debug!("[BroadcastSubscriptionManager] 📄 Received frame for track '{}', size: {} bytes", track_name, frame.len());
+                                        
                                         // Call the data callback if set
                                         let callback_guard = callback_clone.read().await;
                                         if let Some(callback) = callback_guard.as_ref() {
+                                            debug!("[BroadcastSubscriptionManager] 🔄 Calling data callback for track: {}", track_name);
                                             callback(track_name.clone(), frame.to_vec());
+                                            debug!("[BroadcastSubscriptionManager] ✅ Data callback completed for track: {}", track_name);
+                                        } else {
+                                            warn!("[BroadcastSubscriptionManager] ⚠️ No data callback set for track: {}", track_name);
                                         }
                                     }
+                                    debug!("[BroadcastSubscriptionManager] 📦 Group finished for track: {}", track_name);
                                 }
                                 Ok(None) => {
                                     info!(
-                                        "[BroadcastSubscriptionManager] Track '{}' stream ended",
+                                        "[BroadcastSubscriptionManager] Track '{}' stream ended (no more groups)",
                                         track_name
                                     );
                                     break;
