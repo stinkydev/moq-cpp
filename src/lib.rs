@@ -2,13 +2,15 @@ pub mod catalog;
 pub mod config;
 pub mod ffi;
 pub mod session;
-pub mod subscription;
+pub mod subscription_manager;
 pub mod track;
 
 pub use catalog::{Catalog, CatalogType, HangCatalog, SesameCatalog, TrackDefinition, TrackType};
 pub use config::{ConnectionConfig, SessionConfig, WrapperError};
-pub use session::{ConnectionInfo, MoqSession, SessionEvent, SessionLogCallback, SessionType};
-pub use subscription::{DataCallback, SubscriptionManager};
+pub use session::{
+    ConnectionInfo, DataCallback, MoqSession, SessionEvent, SessionLogCallback, SessionType,
+};
+pub use subscription_manager::BroadcastSubscriptionManager;
 pub use track::{StreamPublisher, TrackManager};
 
 // Re-export commonly used types from moq-lite for convenience
@@ -130,26 +132,29 @@ pub async fn create_subscriber(
         .map_err(|e| WrapperError::InvalidConfig(format!("Invalid URL: {}", e)))?;
 
     let config = SessionConfig::new(broadcast_name, url);
-    let mut session = MoqSession::subscriber(config, broadcast_name.to_string()).await?;
+    let session = MoqSession::subscriber(config, broadcast_name.to_string()).await?;
 
-    // Configure requested tracks
-    for track_def in tracks {
-        session.add_track_definition(track_def)?;
-    }
-
-    // Set catalog type for validation
-    session.set_catalog_type(catalog_type)?;
-
+    // Start the session to establish connection
     session.start().await?;
+
+    // Enable automatic subscription management using the new BroadcastSubscriptionManager
+    session
+        .enable_auto_subscription(broadcast_name.to_string(), catalog_type, tracks)
+        .await
+        .map_err(|e| WrapperError::Session(format!("Failed to enable auto-subscription: {}", e)))?;
+
     Ok(session)
 }
 
 /// Set a data callback on a session for receiving track data automatically
-pub async fn set_data_callback<F>(session: &MoqSession, callback: F)
+pub async fn set_data_callback<F>(session: &MoqSession, callback: F) -> Result<(), WrapperError>
 where
     F: Fn(String, Vec<u8>) + Send + Sync + 'static,
 {
-    session.set_data_callback(callback).await;
+    session
+        .set_data_callback(callback)
+        .await
+        .map_err(|e| WrapperError::Session(e.to_string()))
 }
 
 /// Close a session and stop all operations
