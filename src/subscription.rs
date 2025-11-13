@@ -226,7 +226,12 @@ impl SubscriptionManager {
             let subscriptions = self.active_subscriptions.read().await;
             if subscriptions.contains(&subscription_key) {
                 warn!("Already subscribed to track: {}", subscription_key);
-                // Return a new ResilientTrackConsumer anyway - multiple consumers can be useful
+                // Skip creating a new subscription - the existing one will handle reconnection
+                info!("Skipping duplicate subscription for: {}", subscription_key);
+                return Err(anyhow::anyhow!(
+                    "Already subscribed to track: {}",
+                    subscription_key
+                ));
             }
         }
 

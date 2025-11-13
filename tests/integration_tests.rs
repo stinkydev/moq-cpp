@@ -69,7 +69,6 @@ async fn test_configuration() {
     let session_config = SessionConfig {
         broadcast_name: "test-config".to_string(),
         connection: connection_config,
-        auto_reconnect: true,
     };
 
     // Test that configuration is properly stored
@@ -79,7 +78,6 @@ async fn test_configuration() {
         session_config.connection.reconnect_delay,
         Duration::from_millis(500)
     );
-    assert!(session_config.auto_reconnect);
 }
 
 #[tokio::test]

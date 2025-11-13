@@ -89,6 +89,11 @@ pub enum SessionEvent {
     Error { error: String },
 }
 
+/// Callback function types for session events
+pub type BroadcastAnnouncedCallback = Box<dyn Fn(&str) + Send + Sync>;
+pub type BroadcastCancelledCallback = Box<dyn Fn(&str) + Send + Sync>;
+pub type ConnectionClosedCallback = Box<dyn Fn(&str) + Send + Sync>;
+
 /// A high-level wrapper around moq-native that provides:
 /// - Automatic reconnection for both publish and subscribe sessions
 /// - Session lifecycle management
@@ -131,6 +136,11 @@ pub struct MoqSession {
 
     // Session logging
     log_callback: Arc<RwLock<Option<SessionLogCallback>>>,
+
+    // Event callbacks
+    broadcast_announced_callback: Arc<RwLock<Option<BroadcastAnnouncedCallback>>>,
+    broadcast_cancelled_callback: Arc<RwLock<Option<BroadcastCancelledCallback>>>,
+    connection_closed_callback: Arc<RwLock<Option<ConnectionClosedCallback>>>,
 }
 
 #[derive(Clone)]
@@ -230,6 +240,9 @@ impl MoqSession {
             shutdown_tx,
             shutdown_rx,
             log_callback: Arc::new(RwLock::new(None)),
+            broadcast_announced_callback: Arc::new(RwLock::new(None)),
+            broadcast_cancelled_callback: Arc::new(RwLock::new(None)),
+            connection_closed_callback: Arc::new(RwLock::new(None)),
         };
 
         // Initialize subscription manager after session creation
@@ -239,7 +252,7 @@ impl MoqSession {
         Ok(session)
     }
 
-    /// Start the session and handle connections/reconnections
+    /// Start the session and connect once (no reconnection logic)
     pub async fn start(&self) -> Result<()> {
         session_log!(self, info, "Starting MoQ session: {:?}", self.session_type);
 
@@ -253,162 +266,152 @@ impl MoqSession {
         let announcement_tx = self.announcement_tx.clone();
         let session_clone = self.clone();
 
+        // Get callback references for announcements
+        let broadcast_announced_cb = self.broadcast_announced_callback.clone();
+        let broadcast_cancelled_cb = self.broadcast_cancelled_callback.clone();
+        let connection_closed_cb = self.connection_closed_callback.clone();
+
         tokio::spawn(async move {
-            let mut reconnect_delay = config.connection.reconnect_delay;
+            // Check for shutdown signal before connecting
+            if *shutdown_rx.borrow() {
+                info!("Shutdown signal received before connection, stopping session");
+                return;
+            }
 
-            loop {
-                // Check for shutdown signal
-                if *shutdown_rx.borrow() {
-                    info!("Shutdown signal received, stopping session");
-                    break;
-                }
+            let result = Self::establish_connection(
+                &config,
+                &client,
+                &session_type,
+                &broadcast_name,
+                state.clone(),
+                event_tx.clone(),
+                announcement_tx.clone(),
+            )
+            .await;
 
-                let result = Self::establish_connection(
-                    &config,
-                    &client,
-                    &session_type,
-                    &broadcast_name,
-                    state.clone(),
-                    event_tx.clone(),
-                    announcement_tx.clone(),
-                )
-                .await;
+            match result {
+                Ok(session_handle) => {
+                    info!("Successfully established MoQ connection");
 
-                match result {
-                    Ok(session_handle) => {
-                        info!("Successfully established MoQ connection");
+                    // Update connection state
+                    {
+                        let mut state_guard = state.write().await;
+                        state_guard.connected = true;
+                        state_guard.connection_attempts = 1;
+                        state_guard.last_connection_time = Some(Instant::now());
+                        state_guard.current_session = Some(session_handle.clone());
+                    }
 
-                        // Reset reconnection state on successful connection
-                        {
-                            let mut state_guard = state.write().await;
-                            state_guard.connected = true;
-                            state_guard.connection_attempts = 0;
-                            state_guard.last_connection_time = Some(Instant::now());
-                            state_guard.current_session = Some(session_handle.clone());
-                        }
-
-                        reconnect_delay = config.connection.reconnect_delay;
-
-                        // Create track producers for publisher sessions on every connection
-                        if matches!(session_type, SessionType::Publisher) {
-                            let session_for_tracks = session_clone.clone();
-                            // Create track producers before sending Connected event
-                            if let Err(e) = session_for_tracks.create_track_producers().await {
-                                warn!("Failed to create track producers: {}", e);
-                                let _ = event_tx.send(SessionEvent::Error {
-                                    error: format!("Failed to create track producers: {}", e),
-                                });
-                            } else {
-                                info!("Successfully created track producers");
-                                // Only send Connected event after track producers are ready
-                                let _ = event_tx.send(SessionEvent::Connected);
-                            }
+                    // Create track producers for publisher sessions
+                    if matches!(session_type, SessionType::Publisher) {
+                        let session_for_tracks = session_clone.clone();
+                        if let Err(e) = session_for_tracks.create_track_producers().await {
+                            warn!("Failed to create track producers: {}", e);
+                            let _ = event_tx.send(SessionEvent::Error {
+                                error: format!("Failed to create track producers: {}", e),
+                            });
                         } else {
-                            // For subscribers, send Connected immediately
+                            info!("Successfully created track producers");
                             let _ = event_tx.send(SessionEvent::Connected);
                         }
+                    } else {
+                        // For subscribers, send Connected immediately and setup monitoring with callbacks
+                        let _ = event_tx.send(SessionEvent::Connected);
 
-                        // Auto-subscribe to requested tracks for subscriber sessions
-                        if matches!(session_type, SessionType::Subscriber) {
-                            let session_for_auto_sub = session_clone.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) =
-                                    session_for_auto_sub.auto_subscribe_to_tracks().await
-                                {
-                                    warn!("Failed to auto-subscribe to tracks: {}", e);
-                                }
-                            });
-                        }
-
-                        // Wait for session to close or shutdown signal
-                        tokio::select! {
-                            result = session_handle.session.closed() => {
-                                match result {
-                                    Ok(()) => {
-                                        info!("Session closed normally");
-                                        let _ = event_tx.send(SessionEvent::Disconnected {
-                                            reason: "Session closed normally".to_string()
-                                        });
-                                    }
-                                    Err(e) => {
-                                        error!("Session closed with error: {}", e);
-                                        let _ = event_tx.send(SessionEvent::Disconnected {
-                                            reason: format!("Session error: {}", e)
-                                        });
-                                    }
-                                }
-                            }
-                            _ = shutdown_rx.changed() => {
-                                if *shutdown_rx.borrow() {
-                                    info!("Shutdown requested, closing session");
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Mark as disconnected and clean up session state
-                        {
-                            let mut state_guard = state.write().await;
-                            state_guard.connected = false;
-                            state_guard.current_session = None;
-                            state_guard.broadcast = None; // Clear broadcast so it gets recreated on reconnection
-                        }
-
-                        // Clear current groups and reset catalog published flag for reconnection
-                        {
-                            let session_for_cleanup = session_clone.clone();
-                            tokio::spawn(async move {
-                                session_for_cleanup.current_groups.write().await.clear();
-                                *session_for_cleanup.catalog_published.write().await = false;
-                                info!("Cleared session state for reconnection");
-                            });
+                        // Setup announcement monitoring with callbacks for subscribers
+                        if let Some(origin_consumer) = &session_handle.origin_consumer {
+                            Self::monitor_announcements(
+                                origin_consumer.clone(),
+                                event_tx.clone(),
+                                announcement_tx.clone(),
+                                broadcast_announced_cb.clone(),
+                                broadcast_cancelled_cb.clone(),
+                            )
+                            .await;
                         }
                     }
-                    Err(e) => {
+
+                    // Auto-subscribe to requested tracks for subscriber sessions
+                    if matches!(session_type, SessionType::Subscriber) {
+                        let session_for_auto_sub = session_clone.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = session_for_auto_sub.auto_subscribe_to_tracks().await {
+                                warn!("Failed to auto-subscribe to tracks: {}", e);
+                            }
+                        });
+                    }
+
+                    // Wait for session to close or shutdown signal
+                    let disconnect_reason = tokio::select! {
+                        result = session_handle.session.closed() => {
+                            match result {
+                                Ok(()) => {
+                                    info!("Session closed normally");
+                                    "Session closed normally".to_string()
+                                }
+                                Err(e) => {
+                                    error!("Session closed with error: {}", e);
+                                    format!("Session error: {}", e)
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                info!("Shutdown requested, closing session");
+                                "Shutdown requested".to_string()
+                            } else {
+                                "Unknown shutdown reason".to_string()
+                            }
+                        }
+                    };
+
+                    // Call connection closed callback if set
+                    let callback_guard = connection_closed_cb.read().await;
+                    if let Some(callback) = callback_guard.as_ref() {
+                        callback(&disconnect_reason);
+                    }
+                    drop(callback_guard);
+
+                    // Send disconnected event
+                    let _ = event_tx.send(SessionEvent::Disconnected {
+                        reason: disconnect_reason,
+                    });
+
+                    // Mark as disconnected and clean up session state
+                    {
                         let mut state_guard = state.write().await;
                         state_guard.connected = false;
-                        state_guard.connection_attempts += 1;
                         state_guard.current_session = None;
-
-                        error!(
-                            "Failed to establish connection (attempt {}): {}",
-                            state_guard.connection_attempts, e
-                        );
-
-                        let _ = event_tx.send(SessionEvent::Error {
-                            error: format!("Connection failed: {}", e),
-                        });
-
-                        // Always continue reconnecting if auto_reconnect is enabled
-                        // We never give up as long as auto_reconnect is true
-                        if !config.auto_reconnect {
-                            error!("Auto-reconnect disabled, giving up");
-                            let _ = event_tx.send(SessionEvent::Error {
-                                error: "Reconnection disabled".to_string(),
-                            });
-                            break;
-                        }
-
-                        drop(state_guard);
+                        state_guard.broadcast = None;
                     }
+
+                    // Clear session state
+                    session_clone.current_groups.write().await.clear();
+                    *session_clone.catalog_published.write().await = false;
+
+                    info!("Session closed and cleaned up");
                 }
+                Err(e) => {
+                    let mut state_guard = state.write().await;
+                    state_guard.connected = false;
+                    state_guard.connection_attempts = 1;
+                    state_guard.current_session = None;
 
-                // If auto-reconnect is disabled and we're not connected, break
-                if !config.auto_reconnect {
-                    break;
+                    error!("Failed to establish connection: {}", e);
+
+                    // Call connection closed callback if set
+                    let callback_guard = connection_closed_cb.read().await;
+                    if let Some(callback) = callback_guard.as_ref() {
+                        callback(&format!("Connection failed: {}", e));
+                    }
+                    drop(callback_guard);
+
+                    let _ = event_tx.send(SessionEvent::Error {
+                        error: format!("Connection failed: {}", e),
+                    });
+
+                    drop(state_guard);
                 }
-
-                // Wait before attempting to reconnect
-                debug!("Waiting {:?} before reconnection attempt", reconnect_delay);
-                info!(
-                    "Attempting to reconnect... (attempt {} - will continue indefinitely)",
-                    state.read().await.connection_attempts + 1
-                );
-                sleep(reconnect_delay).await;
-
-                // Exponential backoff with maximum delay
-                reconnect_delay =
-                    std::cmp::min(reconnect_delay * 2, config.connection.max_reconnect_delay);
             }
 
             info!("Session management task terminated");
@@ -483,7 +486,9 @@ impl MoqSession {
         // For subscribers, start monitoring announcements
         if let SessionType::Subscriber = session_type {
             if let Some(origin_consumer) = &session_handle.origin_consumer {
-                Self::monitor_announcements(
+                // We can't pass the session here due to circular dependencies, so callbacks won't work in establish_connection
+                // This will be handled differently - callbacks will be set up in the start() method
+                Self::monitor_announcements_simple(
                     origin_consumer.clone(),
                     event_tx.clone(),
                     announcement_tx.clone(),
@@ -502,8 +507,50 @@ impl MoqSession {
         Ok(())
     }
 
-    /// Set up broadcast for a publisher session
+    /// Set up broadcast monitoring with callbacks (called from start method with full session access)
     async fn monitor_announcements(
+        mut origin_consumer: OriginConsumer,
+        event_tx: mpsc::UnboundedSender<SessionEvent>,
+        announcement_tx: broadcast::Sender<String>,
+        broadcast_announced_cb: Arc<RwLock<Option<BroadcastAnnouncedCallback>>>,
+        broadcast_cancelled_cb: Arc<RwLock<Option<BroadcastCancelledCallback>>>,
+    ) {
+        tokio::spawn(async move {
+            while let Some((path, broadcast)) = origin_consumer.announced().await {
+                match broadcast {
+                    Some(_) => {
+                        debug!("Broadcast announced: {}", path);
+                        let _ = event_tx.send(SessionEvent::BroadcastAnnounced {
+                            path: path.to_string(),
+                        });
+                        // Also send to internal broadcast channel for ResilientTrackConsumer
+                        let _ = announcement_tx.send(path.to_string());
+
+                        // Call the broadcast announced callback if set
+                        let callback_guard = broadcast_announced_cb.read().await;
+                        if let Some(callback) = callback_guard.as_ref() {
+                            callback(path.as_ref());
+                        }
+                    }
+                    None => {
+                        debug!("Broadcast unannounced: {}", path);
+                        let _ = event_tx.send(SessionEvent::BroadcastUnannounced {
+                            path: path.to_string(),
+                        });
+
+                        // Call the broadcast cancelled callback if set
+                        let callback_guard = broadcast_cancelled_cb.read().await;
+                        if let Some(callback) = callback_guard.as_ref() {
+                            callback(path.as_ref());
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Simple broadcast monitoring without callbacks (used during connection establishment)
+    async fn monitor_announcements_simple(
         mut origin_consumer: OriginConsumer,
         event_tx: mpsc::UnboundedSender<SessionEvent>,
         announcement_tx: broadcast::Sender<String>,
@@ -575,6 +622,21 @@ impl MoqSession {
         }
 
         Ok(())
+    }
+
+    /// Set callback for when a broadcast is announced as active
+    pub async fn set_broadcast_announced_callback(&self, callback: BroadcastAnnouncedCallback) {
+        *self.broadcast_announced_callback.write().await = Some(callback);
+    }
+
+    /// Set callback for when a broadcast is cancelled or connection is closed
+    pub async fn set_broadcast_cancelled_callback(&self, callback: BroadcastCancelledCallback) {
+        *self.broadcast_cancelled_callback.write().await = Some(callback);
+    }
+
+    /// Set callback for when connection is closed
+    pub async fn set_connection_closed_callback(&self, callback: ConnectionClosedCallback) {
+        *self.connection_closed_callback.write().await = Some(callback);
     }
 }
 
@@ -1070,10 +1132,18 @@ impl MoqSession {
                     info!("Auto-subscribed to track: {}", track_def.name);
                 }
                 Err(e) => {
-                    warn!(
-                        "⚠️ Failed to auto-subscribe to track {}: {}",
-                        track_def.name, e
-                    );
+                    // Don't treat "already subscribed" as an error during auto-subscribe
+                    if e.to_string().contains("Already subscribed") {
+                        debug!(
+                            "Track {} already has active subscription, skipping",
+                            track_def.name
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ Failed to auto-subscribe to track {}: {}",
+                            track_def.name, e
+                        );
+                    }
                 }
             }
         }

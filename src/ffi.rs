@@ -15,6 +15,9 @@ pub struct CMoqSession {
     session: Arc<MoqSession>,
     runtime: Arc<Runtime>,
     data_callback: Arc<RwLock<Option<CDataCallback>>>,
+    broadcast_announced_callback: Arc<RwLock<Option<CBroadcastAnnouncedCallback>>>,
+    broadcast_cancelled_callback: Arc<RwLock<Option<CBroadcastCancelledCallback>>>,
+    connection_closed_callback: Arc<RwLock<Option<CConnectionClosedCallback>>>,
 }
 
 // C-compatible struct for passing track definitions
@@ -67,6 +70,11 @@ pub enum MoqResult {
 // Callback types with session context
 pub type CLogCallback = extern "C" fn(*const c_char, c_int, *const c_char);
 pub type CDataCallback = extern "C" fn(*mut CMoqSession, *const c_char, *const u8, usize);
+
+// New callback types for broadcast events and connection status
+pub type CBroadcastAnnouncedCallback = extern "C" fn(*const c_char);
+pub type CBroadcastCancelledCallback = extern "C" fn(*const c_char);
+pub type CConnectionClosedCallback = extern "C" fn(*const c_char);
 
 impl From<CLogLevel> for Level {
     fn from(level: CLogLevel) -> Self {
@@ -254,6 +262,9 @@ pub unsafe extern "C" fn moq_create_publisher(
         session,
         runtime,
         data_callback: Arc::new(RwLock::new(None)),
+        broadcast_announced_callback: Arc::new(RwLock::new(None)),
+        broadcast_cancelled_callback: Arc::new(RwLock::new(None)),
+        connection_closed_callback: Arc::new(RwLock::new(None)),
     };
 
     Box::into_raw(Box::new(c_session))
@@ -349,6 +360,9 @@ pub unsafe extern "C" fn moq_create_subscriber(
         session,
         runtime,
         data_callback: Arc::new(RwLock::new(None)),
+        broadcast_announced_callback: Arc::new(RwLock::new(None)),
+        broadcast_cancelled_callback: Arc::new(RwLock::new(None)),
+        connection_closed_callback: Arc::new(RwLock::new(None)),
     };
 
     Box::into_raw(Box::new(c_session))
@@ -583,15 +597,153 @@ pub unsafe extern "C" fn moq_session_set_log_callback(
 
 /// Free a MoQ session and its resources
 ///
+/// Set broadcast announced callback
+///
+/// # Safety
+/// The caller must ensure that `session` is a valid pointer returned from
+/// `moq_create_publisher` or `moq_create_subscriber`.
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_set_broadcast_announced_callback(
+    session: *mut CMoqSession,
+    callback: CBroadcastAnnouncedCallback,
+) -> c_int {
+    if session.is_null() {
+        return MoqResult::InvalidArgument as c_int;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    // Store the C callback
+    if let Ok(mut cb) = session_ref.broadcast_announced_callback.write() {
+        *cb = Some(callback);
+    }
+
+    // Set up the Rust callback that will call the C callback
+    let c_callback = session_ref.broadcast_announced_callback.clone();
+    let rust_callback = Box::new(move |path: &str| {
+        if let Ok(guard) = c_callback.read() {
+            if let Some(cb) = *guard {
+                let c_path = CString::new(path).unwrap_or_else(|_| CString::new("").unwrap());
+                cb(c_path.as_ptr());
+            }
+        }
+    });
+
+    // Set the callback in the session
+    session_ref.runtime.block_on(async {
+        session_ref
+            .session
+            .set_broadcast_announced_callback(rust_callback)
+            .await;
+    });
+
+    MoqResult::Success as c_int
+}
+
+/// Set broadcast cancelled callback
+///
+/// # Safety
+/// The caller must ensure that `session` is a valid pointer returned from
+/// `moq_create_publisher` or `moq_create_subscriber`.
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_set_broadcast_cancelled_callback(
+    session: *mut CMoqSession,
+    callback: CBroadcastCancelledCallback,
+) -> c_int {
+    if session.is_null() {
+        return MoqResult::InvalidArgument as c_int;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    // Store the C callback
+    if let Ok(mut cb) = session_ref.broadcast_cancelled_callback.write() {
+        *cb = Some(callback);
+    }
+
+    // Set up the Rust callback that will call the C callback
+    let c_callback = session_ref.broadcast_cancelled_callback.clone();
+    let rust_callback = Box::new(move |path: &str| {
+        if let Ok(guard) = c_callback.read() {
+            if let Some(cb) = *guard {
+                let c_path = CString::new(path).unwrap_or_else(|_| CString::new("").unwrap());
+                cb(c_path.as_ptr());
+            }
+        }
+    });
+
+    // Set the callback in the session
+    session_ref.runtime.block_on(async {
+        session_ref
+            .session
+            .set_broadcast_cancelled_callback(rust_callback)
+            .await;
+    });
+
+    MoqResult::Success as c_int
+}
+
+/// Set connection closed callback
+///
+/// # Safety
+/// The caller must ensure that `session` is a valid pointer returned from
+/// `moq_create_publisher` or `moq_create_subscriber`.
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_set_connection_closed_callback(
+    session: *mut CMoqSession,
+    callback: CConnectionClosedCallback,
+) -> c_int {
+    if session.is_null() {
+        return MoqResult::InvalidArgument as c_int;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    // Store the C callback
+    if let Ok(mut cb) = session_ref.connection_closed_callback.write() {
+        *cb = Some(callback);
+    }
+
+    // Set up the Rust callback that will call the C callback
+    let c_callback = session_ref.connection_closed_callback.clone();
+    let rust_callback = Box::new(move |reason: &str| {
+        if let Ok(guard) = c_callback.read() {
+            if let Some(cb) = *guard {
+                let c_reason = CString::new(reason).unwrap_or_else(|_| CString::new("").unwrap());
+                cb(c_reason.as_ptr());
+            }
+        }
+    });
+
+    // Set the callback in the session
+    session_ref.runtime.block_on(async {
+        session_ref
+            .session
+            .set_connection_closed_callback(rust_callback)
+            .await;
+    });
+
+    MoqResult::Success as c_int
+}
+
 /// # Safety
 /// The caller must ensure that `session` was previously allocated by
 /// `moq_create_publisher` or `moq_create_subscriber` and has not been freed before.
 #[no_mangle]
 pub unsafe extern "C" fn moq_session_free(session: *mut CMoqSession) {
     if !session.is_null() {
-        // Clear the callback before dropping the session
+        // Clear all callbacks before dropping the session
         let session_ref = unsafe { &*session };
         if let Ok(mut cb) = session_ref.data_callback.write() {
+            *cb = None;
+        }
+        if let Ok(mut cb) = session_ref.broadcast_announced_callback.write() {
+            *cb = None;
+        }
+        if let Ok(mut cb) = session_ref.broadcast_cancelled_callback.write() {
+            *cb = None;
+        }
+        if let Ok(mut cb) = session_ref.connection_closed_callback.write() {
             *cb = None;
         }
 

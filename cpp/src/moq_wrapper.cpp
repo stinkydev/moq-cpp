@@ -35,6 +35,9 @@ extern "C"
   int moq_close_session(void *session);
   void moq_session_free(void *session);
   int moq_session_set_log_callback(void *session, void (*callback)(const char *, int, const char *));
+  int moq_session_set_broadcast_announced_callback(void *session, void (*callback)(const char *));
+  int moq_session_set_broadcast_cancelled_callback(void *session, void (*callback)(const char *));
+  int moq_session_set_connection_closed_callback(void *session, void (*callback)(const char *));
 }
 
 namespace moq
@@ -49,6 +52,12 @@ namespace moq
     // Session-specific data callback storage
     std::unordered_map<void *, Session *> g_session_map;
     std::mutex g_session_map_mutex;
+
+    // Global callback instances (set per session)
+    Session *g_current_session = nullptr;
+    BroadcastAnnouncedCallback *g_broadcast_announced_callback = nullptr;
+    BroadcastCancelledCallback *g_broadcast_cancelled_callback = nullptr;
+    ConnectionClosedCallback *g_connection_closed_callback = nullptr;
 
     // Thread-safe C wrapper for log callback
     extern "C" void LogCallbackWrapper(const char *target, int level,
@@ -71,6 +80,35 @@ namespace moq
       (void)track;
       (void)data;
       (void)size;
+    }
+
+  } // namespace
+
+  // C wrapper functions for new callbacks - outside anonymous namespace to access globals
+  extern "C" void SessionBroadcastAnnouncedWrapper(const char *path)
+  {
+    std::lock_guard<std::mutex> lock(g_session_map_mutex);
+    if (g_current_session && g_current_session->broadcast_announced_callback_)
+    {
+      (*g_current_session->broadcast_announced_callback_)(std::string(path));
+    }
+  }
+
+  extern "C" void SessionBroadcastCancelledWrapper(const char *path)
+  {
+    std::lock_guard<std::mutex> lock(g_session_map_mutex);
+    if (g_current_session && g_current_session->broadcast_cancelled_callback_)
+    {
+      (*g_current_session->broadcast_cancelled_callback_)(std::string(path));
+    }
+  }
+
+  extern "C" void SessionConnectionClosedWrapper(const char *reason)
+  {
+    std::lock_guard<std::mutex> lock(g_session_map_mutex);
+    if (g_current_session && g_current_session->connection_closed_callback_)
+    {
+      (*g_current_session->connection_closed_callback_)(std::string(reason));
     }
 
   } // namespace
@@ -230,16 +268,22 @@ namespace moq
     // Register this session instance with the handle
     std::lock_guard<std::mutex> lock(g_session_map_mutex);
     g_session_map[handle_] = this;
+
+    // Set this as the current session for callback routing
+    g_current_session = this;
   }
 
   Session::~Session()
   {
     if (handle_)
     {
-      // Clear the callback first
+      // Clear the callbacks first
       {
         std::lock_guard<std::mutex> lock(callback_mutex_);
         data_callback_.reset();
+        broadcast_announced_callback_.reset();
+        broadcast_cancelled_callback_.reset();
+        connection_closed_callback_.reset();
       }
 
       // Unregister from session map
@@ -330,6 +374,57 @@ namespace moq
     {
       return moq_session_set_log_callback(handle_, nullptr) == 0;
     }
+  }
+
+  bool Session::SetBroadcastAnnouncedCallback(const BroadcastAnnouncedCallback &callback)
+  {
+    if (!handle_)
+    {
+      return false;
+    }
+
+    // Store the callback in this session instance
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      broadcast_announced_callback_ = std::make_unique<BroadcastAnnouncedCallback>(callback);
+    }
+
+    // Set the callback in the Rust session
+    return moq_session_set_broadcast_announced_callback(handle_, SessionBroadcastAnnouncedWrapper) == 0;
+  }
+
+  bool Session::SetBroadcastCancelledCallback(const BroadcastCancelledCallback &callback)
+  {
+    if (!handle_)
+    {
+      return false;
+    }
+
+    // Store the callback in this session instance
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      broadcast_cancelled_callback_ = std::make_unique<BroadcastCancelledCallback>(callback);
+    }
+
+    // Set the callback in the Rust session
+    return moq_session_set_broadcast_cancelled_callback(handle_, SessionBroadcastCancelledWrapper) == 0;
+  }
+
+  bool Session::SetConnectionClosedCallback(const ConnectionClosedCallback &callback)
+  {
+    if (!handle_)
+    {
+      return false;
+    }
+
+    // Store the callback in this session instance
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      connection_closed_callback_ = std::make_unique<ConnectionClosedCallback>(callback);
+    }
+
+    // Set the callback in the Rust session
+    return moq_session_set_connection_closed_callback(handle_, SessionConnectionClosedWrapper) == 0;
   }
 
   bool Session::WriteFrame(const std::string &track_name, const uint8_t *data,
