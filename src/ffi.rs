@@ -75,7 +75,7 @@ pub type CDataCallback = extern "C" fn(*mut CMoqSession, *const c_char, *const u
 // New callback types for broadcast events and connection status
 pub type CBroadcastAnnouncedCallback = extern "C" fn(*const c_char);
 pub type CBroadcastCancelledCallback = extern "C" fn(*const c_char);
-pub type CConnectionClosedCallback = extern "C" fn(*const c_char);
+pub type CConnectionClosedCallback = extern "C" fn(*mut std::ffi::c_void, *const c_char);
 
 impl From<CLogLevel> for Level {
     fn from(level: CLogLevel) -> Self {
@@ -750,11 +750,12 @@ pub unsafe extern "C" fn moq_session_set_connection_closed_callback(
 
     // Set up the Rust callback that will call the C callback
     let c_callback = session_ref.connection_closed_callback.clone();
+    let session_handle = session as *mut std::ffi::c_void as usize; // Convert to usize for thread safety
     let rust_callback = Box::new(move |reason: &str| {
         if let Ok(guard) = c_callback.read() {
             if let Some(cb) = *guard {
                 let c_reason = CString::new(reason).unwrap_or_else(|_| CString::new("").unwrap());
-                cb(c_reason.as_ptr());
+                cb(session_handle as *mut std::ffi::c_void, c_reason.as_ptr());
             }
         }
     });

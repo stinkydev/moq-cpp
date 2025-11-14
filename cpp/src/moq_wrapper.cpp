@@ -39,7 +39,7 @@ extern "C"
   int moq_session_set_log_callback(void *session, void (*callback)(const char *, int, const char *));
   int moq_session_set_broadcast_announced_callback(void *session, void (*callback)(const char *));
   int moq_session_set_broadcast_cancelled_callback(void *session, void (*callback)(const char *));
-  int moq_session_set_connection_closed_callback(void *session, void (*callback)(const char *));
+  int moq_session_set_connection_closed_callback(void *session, void (*callback)(void *, const char *));
 }
 
 namespace moq
@@ -105,12 +105,35 @@ namespace moq
     }
   }
 
-  extern "C" void SessionConnectionClosedWrapper(const char *reason)
+  extern "C" void SessionConnectionClosedWrapper(void *ffi_session_ptr, const char *reason)
   {
-    std::lock_guard<std::mutex> lock(g_session_map_mutex);
-    if (g_current_session && g_current_session->connection_closed_callback_)
+    if (!ffi_session_ptr)
+      return;
+
+    Session *session = nullptr;
     {
-      (*g_current_session->connection_closed_callback_)(std::string(reason));
+      std::lock_guard<std::mutex> lock(g_session_map_mutex);
+      auto it = g_session_map.find(ffi_session_ptr);
+      if (it != g_session_map.end())
+      {
+        session = it->second;
+      }
+    }
+
+    if (session && session->connection_closed_callback_)
+    {
+      try
+      {
+        (*session->connection_closed_callback_)(std::string(reason));
+      }
+      catch (const std::exception &e)
+      {
+        std::cerr << "Exception in connection closed callback: " << e.what() << std::endl;
+      }
+      catch (...)
+      {
+        std::cerr << "Unknown exception in connection closed callback" << std::endl;
+      }
     }
 
   } // namespace
@@ -288,10 +311,16 @@ namespace moq
         connection_closed_callback_.reset();
       }
 
-      // Unregister from session map
+      // Unregister from session map and clear global pointer if it's this session
       {
         std::lock_guard<std::mutex> lock(g_session_map_mutex);
         g_session_map.erase(handle_);
+
+        // Clear global session pointer if it points to this session
+        if (g_current_session == this)
+        {
+          g_current_session = nullptr;
+        }
       }
 
       // Close the session first to ensure proper cleanup

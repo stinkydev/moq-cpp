@@ -99,7 +99,7 @@ namespace moq
   extern "C" void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
   extern "C" void SessionBroadcastAnnouncedWrapper(const char *);
   extern "C" void SessionBroadcastCancelledWrapper(const char *);
-  extern "C" void SessionConnectionClosedWrapper(const char *);
+  extern "C" void SessionConnectionClosedWrapper(void *, const char *);
 
   /// MOQ Session wrapper
   class MOQ_API Session
@@ -107,7 +107,7 @@ namespace moq
     friend void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
     friend void SessionBroadcastAnnouncedWrapper(const char *);
     friend void SessionBroadcastCancelledWrapper(const char *);
-    friend void SessionConnectionClosedWrapper(const char *);
+    friend void SessionConnectionClosedWrapper(void *, const char *);
 
   public:
     /// Create a publisher session

@@ -10,8 +10,8 @@ name = "moq_wrapper"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-moq-lite = { git = "https://github.com/kixelated/moq" }
-moq-native = { git = "https://github.com/kixelated/moq" }
+moq-lite = { git = "https://github.com/stinkydev/moq", branch = "connection-drop-fix" }
+moq-native = { git = "https://github.com/stinkydev/moq", branch = "connection-drop-fix" }
 tokio = { version = "1.47", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
