@@ -186,19 +186,45 @@ struct SessionHandle {
 
 impl MoqSession {
     /// Create a new publisher session
-    pub async fn publisher(config: SessionConfig, broadcast_name: String) -> Result<Self> {
-        Self::new(config, SessionType::Publisher, broadcast_name).await
+    pub async fn publisher(
+        config: SessionConfig,
+        broadcast_name: String,
+        catalog_type: CatalogType,
+        tracks: Vec<TrackDefinition>,
+    ) -> Result<Self> {
+        Self::new(
+            config,
+            SessionType::Publisher,
+            broadcast_name,
+            catalog_type,
+            tracks,
+        )
+        .await
     }
 
     /// Create a new subscriber session
-    pub async fn subscriber(config: SessionConfig, broadcast_name: String) -> Result<Self> {
-        Self::new(config, SessionType::Subscriber, broadcast_name).await
+    pub async fn subscriber(
+        config: SessionConfig,
+        broadcast_name: String,
+        catalog_type: CatalogType,
+        tracks: Vec<TrackDefinition>,
+    ) -> Result<Self> {
+        Self::new(
+            config,
+            SessionType::Subscriber,
+            broadcast_name,
+            catalog_type,
+            tracks,
+        )
+        .await
     }
 
     async fn new(
         config: SessionConfig,
         session_type: SessionType,
         broadcast_name: String,
+        catalog_type: CatalogType,
+        tracks: Vec<TrackDefinition>,
     ) -> Result<Self> {
         let mut client_config = config.connection.client_config.clone();
 
@@ -234,7 +260,7 @@ impl MoqSession {
             broadcast_consumer: None,
         }));
 
-        let session = Self {
+        let mut session = Self {
             config,
             session_type: session_type.clone(),
             client,
@@ -259,6 +285,18 @@ impl MoqSession {
             connection_closed_callback: Arc::new(RwLock::new(None)),
             data_callback: Arc::new(RwLock::new(None)),
         };
+
+        // loop through tracks and add
+        for track_def in tracks.iter() {
+            session.add_track_definition(track_def.clone())?;
+        }
+
+        // Set catalog if needed (only for publishers)
+        if matches!(session_type, SessionType::Publisher) && catalog_type != CatalogType::None {
+            let catalog = Catalog::new(catalog_type.clone(), &tracks)
+                .ok_or_else(|| anyhow::anyhow!("Failed to create catalog"))?;
+            session.set_catalog(catalog)?;
+        }
 
         Ok(session)
     }
@@ -465,9 +503,7 @@ impl MoqSession {
                 // For session connection, we provide the consumer and no producer
                 (Some(origin.consumer), None, broadcast_handle)
             }
-            SessionType::Subscriber => {
-                (None, Some(origin.producer), None)
-            }
+            SessionType::Subscriber => (None, Some(origin.producer), None),
         };
 
         // Perform MoQ handshake
@@ -504,12 +540,9 @@ impl MoqSession {
         session: MoqSession, // Add session reference to handle BroadcastSubscriptionManager lifecycle
     ) {
         tokio::spawn(async move {
-            debug!("Starting announcement monitoring task");
             while let Some((path, broadcast)) = origin_consumer.announced().await {
                 match broadcast {
                     Some(_) => {
-                        info!("📢 ANNOUNCEMENT: Broadcast '{}' is now ACTIVE", path);
-                        /*
                         let _ = event_tx.send(SessionEvent::BroadcastAnnounced {
                             path: path.to_string(),
                         });
@@ -518,24 +551,8 @@ impl MoqSession {
 
                         // Handle announcement for our namespace - create or recreate BroadcastSubscriptionManager
                         if path.as_ref() == session.broadcast_name {
-                            let manager_guard = session.broadcast_subscription_manager.read().await;
-                            let is_first_time = manager_guard.is_none();
-                            drop(manager_guard);
-
-                            if is_first_time {
-                                debug!(
-                                    "First-time broadcast announcement for our namespace '{}'",
-                                    path
-                                );
-                                let _ = session
-                                    .create_or_recreate_manager("first-time announcement")
-                                    .await;
-                            } else {
-                                debug!("Re-announcement for our namespace '{}', recreating subscription manager", path);
-                                let _ = session.create_or_recreate_manager("re-announcement").await;
-                            }
+                            let _ = session.create_or_recreate_manager().await;
                         }
-                        */
 
                         // Call the broadcast announced callback if set
                         let callback_guard = broadcast_announced_cb.read().await;
@@ -643,37 +660,9 @@ impl MoqSession {
         .await
     }
 
-    /// Enable automatic subscription management for this session
-    /// This stores the configuration and will create a BroadcastSubscriptionManager when the broadcast is announced
-    /// Use this for simple scenarios where you want automatic catalog and track handling
-    pub async fn enable_auto_subscription(
-        &self,
-        broadcast_name: String,
-        catalog_type: CatalogType,
-        requested_tracks: Vec<TrackDefinition>,
-    ) -> Result<()> {
-        // Check if already enabled
-        {
-            let manager_guard = self.broadcast_subscription_manager.read().await;
-            if manager_guard.is_some() {
-                debug!(
-                    "Automatic subscription management already enabled - ignoring duplicate call"
-                );
-                return Ok(());
-            }
-        }
-
-        // Store the configuration for later use when broadcast is announced
-        *self.catalog_type.write().await = catalog_type;
-        *self.requested_tracks.write().await = requested_tracks;
-
-        debug!("Enabled automatic subscription management - will create manager when '{}' is announced", broadcast_name);
-        Ok(())
-    }
-
     /// Set data callback for the internal subscription manager
     /// Stores the callback in session and applies it to existing manager if present
-    pub async fn set_auto_subscription_data_callback<F>(&self, callback: F) -> Result<()>
+    pub async fn set_subscription_data_callback<F>(&self, callback: F) -> Result<()>
     where
         F: Fn(String, Vec<u8>) + Send + Sync + 'static,
     {
@@ -697,52 +686,28 @@ impl MoqSession {
         Ok(())
     }
 
-    /// Get current catalog from the internal subscription manager
-    /// Only works if enable_auto_subscription was called first
-    pub async fn get_auto_subscription_catalog(&self) -> Option<Catalog> {
-        if let Some(manager) = self.broadcast_subscription_manager.read().await.as_ref() {
-            manager.get_catalog().await
-        } else {
-            None
-        }
-    }
-
-    /// Get active tracks from the internal subscription manager
-    /// Only works if enable_auto_subscription was called first
-    pub async fn get_auto_subscription_active_tracks(&self) -> Vec<String> {
-        if let Some(manager) = self.broadcast_subscription_manager.read().await.as_ref() {
-            manager.get_active_tracks().await
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Check if auto subscription is active
-    pub async fn is_auto_subscription_active(&self) -> bool {
-        if let Some(manager) = self.broadcast_subscription_manager.read().await.as_ref() {
-            manager.is_active().await
-        } else {
-            false
-        }
-    }
-
-    /// Disable automatic subscription management and stop all subscriptions
-    pub async fn disable_auto_subscription(&self) {
-        if let Some(manager) = self.broadcast_subscription_manager.write().await.take() {
-            manager.stop().await;
-            debug!("Disabled automatic subscription management");
-        }
-    }
-
     /// Create or recreate the BroadcastSubscriptionManager with stored configuration
     /// This is the single place where the manager is created
-    async fn create_or_recreate_manager(&self, reason: &str) -> Result<()> {
-        debug!("Creating BroadcastSubscriptionManager: {}", reason);
-
+    async fn create_or_recreate_manager(&self) -> Result<()> {
         // Stop existing manager if present
         if let Some(manager) = self.broadcast_subscription_manager.write().await.take() {
             debug!("Stopping existing BroadcastSubscriptionManager");
             manager.stop().await;
+        }
+
+        // For subscriber sessions, subscribe to the broadcast first to ensure broadcast_consumer is available
+        if matches!(self.session_type, SessionType::Subscriber) {
+            debug!(
+                "Subscribing to broadcast '{}' before creating manager",
+                self.broadcast_name
+            );
+            if let Err(e) = self.subscribe_broadcast(&self.broadcast_name).await {
+                warn!(
+                    "Failed to subscribe to broadcast '{}': {}",
+                    self.broadcast_name, e
+                );
+                return Err(e);
+            }
         }
 
         // Get configuration from session storage
@@ -762,19 +727,15 @@ impl MoqSession {
             Ok(new_manager) => {
                 // Set the data callback if one exists
                 if let Some(callback) = data_callback {
-                    debug!("Applying stored data callback to BroadcastSubscriptionManager");
                     new_manager
                         .set_data_callback(move |track: String, data: Vec<u8>| {
                             callback(track, data);
                         })
                         .await;
-                } else {
-                    debug!("No data callback stored in session");
                 }
 
                 // Store the new manager
                 *self.broadcast_subscription_manager.write().await = Some(new_manager);
-                debug!("Successfully created BroadcastSubscriptionManager");
                 Ok(())
             }
             Err(e) => {
@@ -1169,17 +1130,17 @@ impl MoqSession {
     }
 
     /// Set a data callback for receiving track data automatically
-    /// This is an alias for set_auto_subscription_data_callback for backward compatibility
+    /// This is an alias for set_subscription_data_callback for backward compatibility
     pub async fn set_data_callback<F>(&self, callback: F) -> Result<()>
     where
         F: Fn(String, Vec<u8>) + Send + Sync + 'static,
     {
-        self.set_auto_subscription_data_callback(callback).await
+        self.set_subscription_data_callback(callback).await
     }
 
     /// Close the session and stop all operations
     pub async fn close_session(&self) -> Result<()> {
-        info!("🔒 Closing MoQ session");
+        debug!("Closing MoQ session");
 
         // Send shutdown signal
         if let Err(e) = self.shutdown_tx.send(true) {
@@ -1203,7 +1164,9 @@ impl MoqSession {
         }
 
         // Shutdown broadcast subscription manager
-        self.disable_auto_subscription().await;
+        if let Some(manager) = self.broadcast_subscription_manager.read().await.as_ref() {
+            manager.stop().await;
+        }
 
         debug!("Session closed successfully");
         Ok(())
@@ -1216,11 +1179,11 @@ impl MoqSession {
     /// This method can only be called once per session during connection establishment
     pub async fn subscribe_broadcast(&self, broadcast_name: &str) -> Result<BroadcastConsumer> {
         debug!(
-            "📡 [MoqSession] subscribe_broadcast called for: '{}'",
+            "[MoqSession] subscribe_broadcast called for: '{}'",
             broadcast_name
         );
 
-        let state = self.state.read().await;
+        let mut state = self.state.write().await;
         let session_handle = state
             .current_session
             .as_ref()
@@ -1237,6 +1200,8 @@ impl MoqSession {
                         "[MoqSession] Successfully consumed broadcast: '{}'",
                         broadcast_name
                     );
+                    // Store the broadcast consumer in session state for later use
+                    state.broadcast_consumer = Some(broadcast_consumer.clone());
                     Ok(broadcast_consumer)
                 }
                 None => Err(WrapperError::BroadcastNotFound(broadcast_name.to_string()).into()),
@@ -1262,11 +1227,6 @@ impl MoqSession {
         broadcast_name: &str,
         track_name: &str,
     ) -> Result<TrackConsumer> {
-        info!(
-            "🎵 [MoqSession] TRACK SUBSCRIPTION REQUEST: track '{}' in broadcast '{}'",
-            track_name, broadcast_name
-        );
-
         let broadcast = self.get_broadcast_consumer().await?;
         let track = Track {
             name: track_name.to_string(),

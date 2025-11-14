@@ -62,19 +62,13 @@ pub async fn create_publisher(
         .map_err(|e| WrapperError::InvalidConfig(format!("Invalid URL: {}", e)))?;
 
     let config = SessionConfig::new(broadcast_name, url);
-    let mut session = MoqSession::publisher(config, broadcast_name.to_string()).await?;
-
-    // Pre-configure tracks
-    for track_def in &tracks {
-        session.add_track_definition(track_def.clone())?;
-    }
-
-    // Add catalog track if needed
-    if catalog_type != CatalogType::None {
-        let catalog = Catalog::new(catalog_type.clone(), &tracks)
-            .ok_or_else(|| WrapperError::InvalidConfig("Failed to create catalog".to_string()))?;
-        session.set_catalog(catalog)?;
-    }
+    let session = MoqSession::publisher(
+        config,
+        broadcast_name.to_string(),
+        catalog_type,
+        tracks.clone(),
+    )
+    .await?;
 
     session.start().await?;
 
@@ -132,16 +126,16 @@ pub async fn create_subscriber(
         .map_err(|e| WrapperError::InvalidConfig(format!("Invalid URL: {}", e)))?;
 
     let config = SessionConfig::new(broadcast_name, url);
-    let session = MoqSession::subscriber(config, broadcast_name.to_string()).await?;
+    let session = MoqSession::subscriber(
+        config,
+        broadcast_name.to_string(),
+        catalog_type,
+        tracks.clone(),
+    )
+    .await?;
 
     // Start the session to establish connection
     session.start().await?;
-
-    // Enable automatic subscription management using the new BroadcastSubscriptionManager
-    session
-        .enable_auto_subscription(broadcast_name.to_string(), catalog_type, tracks)
-        .await
-        .map_err(|e| WrapperError::Session(format!("Failed to enable auto-subscription: {}", e)))?;
 
     Ok(session)
 }

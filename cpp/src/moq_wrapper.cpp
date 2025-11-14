@@ -31,6 +31,8 @@ extern "C"
                              const uint8_t *data, size_t data_len);
   int moq_write_frame(void *session, const char *track_name,
                       const uint8_t *data, size_t data_len, int new_group);
+  int moq_publish_data(void *session, const char *track_name,
+                       const uint8_t *data, size_t data_len);
   int moq_is_connected(void *session);
   int moq_close_session(void *session);
   void moq_session_free(void *session);
@@ -445,6 +447,15 @@ namespace moq
       return false;
     }
     return moq_write_single_frame(handle_, track_name.c_str(), data, size) == 0;
+  }
+
+  bool Session::PublishData(const std::string &track_name, const uint8_t *data, size_t size)
+  {
+    if (!handle_)
+    {
+      return false;
+    }
+    return moq_publish_data(handle_, track_name.c_str(), data, size) == 0;
   }
 
   bool Session::IsConnected() const

@@ -70,6 +70,7 @@ async fn run_publisher(args: Args) -> Result<()> {
     info!("🕐 Starting MoQ clock publisher");
 
     // Create tracks to publish
+
     let tracks = vec![TrackDefinition::data(args.track.clone(), 0)];
 
     // Create publisher session with tracks and specified catalog type
@@ -105,8 +106,23 @@ async fn run_publisher(args: Args) -> Result<()> {
 async fn run_subscriber(args: Args) -> Result<()> {
     info!("🕐 Starting MoQ clock subscriber");
 
+    let track_name = args.track.clone();
+
     // Create subscriber session with no specific tracks (will subscribe manually)
-    let tracks = vec![]; // We'll subscribe manually to tracks
+    let track_def = TrackDefinition {
+        name: track_name.clone(),
+        priority: 0,
+        track_type: TrackType::Video,
+    };
+
+    let track_def2 = TrackDefinition {
+        name: "audio".to_string(),
+        priority: 0,
+        track_type: TrackType::Audio,
+    };
+
+    let tracks = vec![track_def, track_def2];
+
     let session =
         create_subscriber(&args.url, &args.broadcast, tracks, args.catalog.clone()).await?;
     let session = Arc::new(session);
@@ -133,32 +149,17 @@ async fn run_subscriber(args: Args) -> Result<()> {
     );
 
     // Set up a clock display callback using the new auto-subscription method
-    let track_name = args.track.clone();
     let _ = session
-        .set_auto_subscription_data_callback({
+        .set_data_callback({
             use std::sync::Mutex;
             let state = Arc::new(Mutex::new(ClockState::new()));
 
             move |track: String, data: Vec<u8>| {
-                if track == track_name {
-                    let data_str = String::from_utf8_lossy(&data).to_string();
-                    let mut clock_state = state.lock().unwrap();
-                    clock_state.process_frame(data_str);
-                }
+                info!("📥 Received frame on track {}: {} bytes", track, data.len());
             }
         })
         .await;
 
-    // Enable auto-subscription with the new BroadcastSubscriptionManager
-    let track_def = TrackDefinition {
-        name: args.track.clone(),
-        priority: 0,
-        track_type: TrackType::Data,
-    };
-
-    session
-        .enable_auto_subscription(args.broadcast.clone(), args.catalog, vec![track_def])
-        .await?;
     info!("🎯 Enabled auto-subscription for track: {}", args.track);
 
     info!("📥 Listening for clock data... Press Ctrl+C to stop");
@@ -282,6 +283,7 @@ impl ClockPublisher {
 
 /// Clock state for assembling time display from frames
 struct ClockState {
+    #[allow(dead_code)]
     base_time: Option<String>,
     frame_count: usize,
 }
@@ -296,7 +298,8 @@ impl ClockState {
 
     fn process_frame(&mut self, data: String) {
         self.frame_count += 1;
-
+        info!("📥 Received frame #{}: {}", self.frame_count, data.len());
+        /*
         if self.frame_count == 1 {
             // First frame is the base timestamp (everything except seconds)
             self.base_time = Some(data.clone());
@@ -315,5 +318,6 @@ impl ClockState {
                 println!("{} {}{:02}", clock_emoji, base, seconds);
             }
         }
+        */
     }
 }

@@ -151,6 +151,12 @@ namespace moq
     /// Creates a new group, writes the frame, and closes the group
     bool WriteSingleFrame(const std::string &track_name, const uint8_t *data, size_t size);
 
+    /// Simplified publish data function that handles group creation internally
+    /// @param track_name Name of the track
+    /// @param data Pointer to the data
+    /// @param size Size of the data
+    bool PublishData(const std::string &track_name, const uint8_t *data, size_t size);
+
     /// Check if session is connected
     bool IsConnected() const;
 

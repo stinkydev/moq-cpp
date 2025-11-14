@@ -6,8 +6,9 @@ use tokio::runtime::Runtime;
 use tracing::{info, Level};
 
 use crate::{
-    close_session, create_publisher, create_subscriber, set_data_callback, set_log_level,
-    write_frame, write_single_frame, CatalogType, MoqSession, TrackDefinition, TrackType,
+    close_session, create_publisher, create_subscriber, publish_data, set_data_callback,
+    set_log_level, write_frame, write_single_frame, CatalogType, MoqSession, TrackDefinition,
+    TrackType,
 };
 
 // Opaque handles for C API
@@ -451,6 +452,48 @@ pub unsafe extern "C" fn moq_write_single_frame(
         track_str,
         data_vec,
     )) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Simplified publish data function that handles group creation internally
+/// This corresponds to lib.rs publish_data()
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers.
+/// The caller must ensure that:
+/// - `session` is a valid pointer to a CMoqSession
+/// - `track_name` is a valid null-terminated C string
+/// - `data` points to a valid buffer of at least `data_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn moq_publish_data(
+    session: *mut CMoqSession,
+    track_name: *const c_char,
+    data: *const u8,
+    data_len: usize,
+) -> c_int {
+    if session.is_null() || track_name.is_null() || data.is_null() {
+        return -1;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    let track_str = unsafe {
+        match CStr::from_ptr(track_name).to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+
+    let data_slice = unsafe { std::slice::from_raw_parts(data, data_len) };
+    let data_vec = data_slice.to_vec();
+
+    match session_ref
+        .runtime
+        .block_on(publish_data(&session_ref.session, track_str, data_vec))
+    {
         Ok(()) => 0,
         Err(_) => -1,
     }

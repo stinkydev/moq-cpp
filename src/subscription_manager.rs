@@ -161,13 +161,11 @@ impl BroadcastSubscriptionManager {
         );
 
         // Subscribe to catalog.json - only once
-        info!("[BroadcastSubscriptionManager] 🔄 ATTEMPTING catalog.json subscription for broadcast: {}", broadcast_name);
         match session
             .subscribe_track_internal(broadcast_name, "catalog.json")
             .await
         {
             Ok(mut track_consumer) => {
-                info!("[BroadcastSubscriptionManager] ✅ SUCCESS: catalog.json subscription created for broadcast: {}", broadcast_name);
                 *catalog_consumer.write().await = Some(track_consumer.clone());
 
                 // Monitor catalog for updates
@@ -175,7 +173,7 @@ impl BroadcastSubscriptionManager {
                     while let Ok(Some(mut group)) = track_consumer.next_group().await {
                         if let Ok(Some(frame)) = group.read_frame().await {
                             let catalog_json = String::from_utf8_lossy(&frame).to_string();
-                            info!(
+                            debug!(
                                 "[BroadcastSubscriptionManager] 📋 Catalog updated ({} bytes)",
                                 catalog_json.len()
                             );
@@ -185,7 +183,6 @@ impl BroadcastSubscriptionManager {
                                 Ok(sesame_catalog) => {
                                     let catalog = Catalog::Sesame(sesame_catalog);
                                     *current_catalog.write().await = Some(catalog);
-                                    info!("[BroadcastSubscriptionManager] ✅ Catalog parsed successfully");
                                 }
                                 Err(e) => {
                                     warn!("[BroadcastSubscriptionManager] ⚠️ Failed to parse catalog: {}", e);
@@ -193,19 +190,16 @@ impl BroadcastSubscriptionManager {
                             }
 
                             // Broadcast catalog update
-                            if let Err(e) = catalog_update_tx.send(catalog_json) {
-                                debug!("[BroadcastSubscriptionManager] No listeners for catalog update: {}", e);
-                            }
+                            if let Err(_e) = catalog_update_tx.send(catalog_json) {}
                         }
                     }
 
-                    warn!("[BroadcastSubscriptionManager] Catalog stream ended");
                     *catalog_consumer.write().await = None;
                 });
             }
             Err(e) => {
                 warn!(
-                    "[BroadcastSubscriptionManager] ❌ FAILED to subscribe to catalog for broadcast {}: {}",
+                    "[BroadcastSubscriptionManager] FAILED to subscribe to catalog for broadcast {}: {}",
                     broadcast_name, e
                 );
             }
@@ -243,42 +237,22 @@ impl BroadcastSubscriptionManager {
                     .await
                 {
                     Ok(mut track_consumer) => {
-                        info!("[BroadcastSubscriptionManager] ✅ Successfully subscribed to track: {}", track_name);
-
                         // Store the consumer
                         track_consumers_clone
                             .write()
                             .await
                             .insert(track_name.clone(), track_consumer.clone());
 
-                        // Monitor track data
-                        {
-                            let callback_guard = callback_clone.read().await;
-                            if callback_guard.is_some() {
-                                info!("[BroadcastSubscriptionManager] 👀 Starting data monitoring for track: {} (callback is set)", track_name);
-                            } else {
-                                warn!("[BroadcastSubscriptionManager] ⚠️ Starting data monitoring for track: {} (NO CALLBACK SET!)", track_name);
-                            }
-                        }
                         while *is_active_clone.read().await {
-                            debug!("[BroadcastSubscriptionManager] 🔍 Waiting for next group on track: {}", track_name);
                             match track_consumer.next_group().await {
                                 Ok(Some(mut group)) => {
-                                    debug!("[BroadcastSubscriptionManager] 📦 Received group for track: {}", track_name);
                                     while let Ok(Some(frame)) = group.read_frame().await {
-                                        debug!("[BroadcastSubscriptionManager] 📄 Received frame for track '{}', size: {} bytes", track_name, frame.len());
-
                                         // Call the data callback if set
                                         let callback_guard = callback_clone.read().await;
                                         if let Some(callback) = callback_guard.as_ref() {
-                                            debug!("[BroadcastSubscriptionManager] 🔄 Calling data callback for track: {}", track_name);
                                             callback(track_name.clone(), frame.to_vec());
-                                            debug!("[BroadcastSubscriptionManager] ✅ Data callback completed for track: {}", track_name);
-                                        } else {
-                                            warn!("[BroadcastSubscriptionManager] ⚠️ No data callback set for track: {}", track_name);
                                         }
                                     }
-                                    debug!("[BroadcastSubscriptionManager] 📦 Group finished for track: {}", track_name);
                                 }
                                 Ok(None) => {
                                     info!(
@@ -305,7 +279,10 @@ impl BroadcastSubscriptionManager {
                         );
                     }
                     Err(e) => {
-                        warn!("[BroadcastSubscriptionManager] ⚠️ Failed to subscribe to track '{}': {}", track_name, e);
+                        warn!(
+                            "[BroadcastSubscriptionManager] Failed to subscribe to track '{}': {}",
+                            track_name, e
+                        );
                     }
                 }
             });
