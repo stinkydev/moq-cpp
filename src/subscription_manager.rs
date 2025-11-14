@@ -147,8 +147,6 @@ impl BroadcastSubscriptionManager {
         });
     }
 
-
-
     /// Manage catalog subscription and updates
     async fn manage_catalog_subscription(
         session: &MoqSession,
@@ -269,7 +267,7 @@ impl BroadcastSubscriptionManager {
                                     debug!("[BroadcastSubscriptionManager] 📦 Received group for track: {}", track_name);
                                     while let Ok(Some(frame)) = group.read_frame().await {
                                         debug!("[BroadcastSubscriptionManager] 📄 Received frame for track '{}', size: {} bytes", track_name, frame.len());
-                                        
+
                                         // Call the data callback if set
                                         let callback_guard = callback_clone.read().await;
                                         if let Some(callback) = callback_guard.as_ref() {

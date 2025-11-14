@@ -396,7 +396,7 @@ pub unsafe extern "C" fn moq_session_set_data_callback(
     let session_addr = session as usize; // Convert to usize for thread safety
     let data_callback_ref = session_ref.data_callback.clone();
 
-    session_ref.runtime.block_on(set_data_callback(
+    let _ = session_ref.runtime.block_on(set_data_callback(
         &session_ref.session,
         move |track: String, data: Vec<u8>| {
             if let Ok(cb_guard) = data_callback_ref.read() {

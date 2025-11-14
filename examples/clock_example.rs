@@ -14,19 +14,19 @@ use moq_wrapper::{
 #[command(author, version, about = "MoQ Clock example using moq-wrapper")]
 struct Args {
     /// MoQ relay URL
-    #[arg(long, default_value = "https://relay1.moq.sesame-streams.com:4433")]
+    #[arg(long, default_value = "https://r1.moq.sesame-streams.com:4433")]
     url: String,
 
     /// Broadcast name
-    #[arg(long, default_value = "clock-wrapper")]
+    #[arg(long, default_value = "peter2")]
     broadcast: String,
 
     /// Track name
-    #[arg(long, default_value = "seconds")]
+    #[arg(long, default_value = "video")]
     track: String,
 
     /// Catalog type to use (none, sesame, hang)
-    #[arg(long, default_value = "none", value_parser = parse_catalog_type)]
+    #[arg(long, default_value = "sesame", value_parser = parse_catalog_type)]
     catalog: CatalogType,
 
     #[command(subcommand)]
