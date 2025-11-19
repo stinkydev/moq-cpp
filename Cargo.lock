@@ -1103,7 +1103,7 @@ dependencies = [
 [[package]]
 name = "moq-lite"
 version = "0.9.6"
-source = "git+https://github.com/kixelated/moq#c835543d95cef203a8c1d8f24ac7dd324ab4d0dc"
+source = "git+https://github.com/stinkydev/moq?branch=connection-drop-fix#4c179ab7d8de546dc508f66df4e4ef765ee94fe7"
 dependencies = [
  "async-channel",
  "bytes",
@@ -1120,7 +1120,7 @@ dependencies = [
 [[package]]
 name = "moq-native"
 version = "0.9.6"
-source = "git+https://github.com/kixelated/moq#c835543d95cef203a8c1d8f24ac7dd324ab4d0dc"
+source = "git+https://github.com/stinkydev/moq?branch=connection-drop-fix#4c179ab7d8de546dc508f66df4e4ef765ee94fe7"
 dependencies = [
  "anyhow",
  "clap",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "moq-wrapper"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "async-trait",
