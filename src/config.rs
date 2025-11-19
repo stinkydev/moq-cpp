@@ -72,9 +72,6 @@ pub struct SessionConfig {
 
     /// Connection configuration
     pub connection: ConnectionConfig,
-
-    /// Enable automatic reconnection
-    pub auto_reconnect: bool,
 }
 
 impl SessionConfig {
@@ -85,7 +82,6 @@ impl SessionConfig {
                 url,
                 ..Default::default()
             },
-            auto_reconnect: true,
         }
     }
 }

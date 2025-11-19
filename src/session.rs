@@ -3,9 +3,8 @@ use bytes::Bytes;
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch, RwLock};
-use tokio::time::{sleep, Instant};
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn, Level};
 
 use moq_lite::{
@@ -16,10 +15,15 @@ use moq_native::Client;
 
 use crate::catalog::{Catalog, CatalogType, TrackDefinition};
 use crate::config::{SessionConfig, WrapperError};
-use crate::subscription::SubscriptionManager;
 
 /// Log callback function type for session-specific logging
 pub type SessionLogCallback = Box<dyn Fn(&str, Level, &str) + Send + Sync>;
+
+/// Type alias for data callback function
+pub type DataCallback = Arc<dyn Fn(String, Vec<u8>) + Send + Sync>;
+
+/// Type alias for optional data callback stored in session
+pub type OptionalDataCallback = Arc<RwLock<Option<DataCallback>>>;
 
 /// Macro for session-aware logging that sends to both tracing and session callback
 macro_rules! session_log {
@@ -89,6 +93,11 @@ pub enum SessionEvent {
     Error { error: String },
 }
 
+/// Callback function types for session events
+pub type BroadcastAnnouncedCallback = Box<dyn Fn(&str) + Send + Sync>;
+pub type BroadcastCancelledCallback = Box<dyn Fn(&str) + Send + Sync>;
+pub type ConnectionClosedCallback = Box<dyn Fn(&str) + Send + Sync>;
+
 /// A high-level wrapper around moq-native that provides:
 /// - Automatic reconnection for both publish and subscribe sessions
 /// - Session lifecycle management
@@ -119,11 +128,12 @@ pub struct MoqSession {
     event_tx: mpsc::UnboundedSender<SessionEvent>,
     event_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<SessionEvent>>>>,
 
-    // Internal broadcast channel for announcement events (for ResilientTrackConsumer)
+    // Internal broadcast channel for announcement events (for BroadcastSubscriptionManager)
     announcement_tx: broadcast::Sender<String>,
 
     // Subscription management
-    subscription_manager: Arc<RwLock<Option<SubscriptionManager>>>,
+    broadcast_subscription_manager:
+        Arc<RwLock<Option<crate::subscription_manager::BroadcastSubscriptionManager>>>,
 
     // Shutdown signal
     shutdown_tx: watch::Sender<bool>,
@@ -131,6 +141,15 @@ pub struct MoqSession {
 
     // Session logging
     log_callback: Arc<RwLock<Option<SessionLogCallback>>>,
+
+    // Event callbacks
+    broadcast_announced_callback: Arc<RwLock<Option<BroadcastAnnouncedCallback>>>,
+    broadcast_cancelled_callback: Arc<RwLock<Option<BroadcastCancelledCallback>>>,
+    connection_closed_callback: Arc<RwLock<Option<ConnectionClosedCallback>>>,
+
+    // Data callback for BroadcastSubscriptionManager
+    data_callback: OptionalDataCallback,
+    // Catalog management is now handled by BroadcastSubscriptionManager
 }
 
 #[derive(Clone)]
@@ -140,22 +159,21 @@ struct SessionState {
     last_connection_time: Option<Instant>,
     current_session: Option<SessionHandle>,
     broadcast: Option<BroadcastHandle>,
+    // Store the broadcast consumer for subscribers (called once after connection)
+    broadcast_consumer: Option<BroadcastConsumer>,
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 struct TrackHandle {
     producer: Option<TrackProducer>,
-    consumer: Option<TrackConsumer>,
     track_info: Track,
+    #[allow(dead_code)]
     track_definition: Option<TrackDefinition>,
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 struct BroadcastHandle {
     producer: Option<BroadcastProducer>,
-    consumer: Option<BroadcastConsumer>,
 }
 
 #[derive(Clone)]
@@ -163,35 +181,66 @@ struct SessionHandle {
     session: Arc<Session<web_transport_quinn::Session>>,
     origin_producer: Option<OriginProducer>,
     origin_consumer: Option<OriginConsumer>,
+    announcement_consumer: OriginConsumer,
 }
 
 impl MoqSession {
     /// Create a new publisher session
-    pub async fn publisher(config: SessionConfig, broadcast_name: String) -> Result<Self> {
-        Self::new(config, SessionType::Publisher, broadcast_name).await
+    pub async fn publisher(
+        config: SessionConfig,
+        broadcast_name: String,
+        catalog_type: CatalogType,
+        tracks: Vec<TrackDefinition>,
+    ) -> Result<Self> {
+        Self::new(
+            config,
+            SessionType::Publisher,
+            broadcast_name,
+            catalog_type,
+            tracks,
+        )
+        .await
     }
 
     /// Create a new subscriber session
-    pub async fn subscriber(config: SessionConfig, broadcast_name: String) -> Result<Self> {
-        Self::new(config, SessionType::Subscriber, broadcast_name).await
+    pub async fn subscriber(
+        config: SessionConfig,
+        broadcast_name: String,
+        catalog_type: CatalogType,
+        tracks: Vec<TrackDefinition>,
+    ) -> Result<Self> {
+        Self::new(
+            config,
+            SessionType::Subscriber,
+            broadcast_name,
+            catalog_type,
+            tracks,
+        )
+        .await
     }
 
     async fn new(
         config: SessionConfig,
         session_type: SessionType,
         broadcast_name: String,
+        catalog_type: CatalogType,
+        tracks: Vec<TrackDefinition>,
     ) -> Result<Self> {
         let mut client_config = config.connection.client_config.clone();
 
         // Force IPv4 binding on Windows to avoid IPv6 issues
         #[cfg(windows)]
         {
-            client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
+            client_config.bind = "0.0.0.0:0"
+                .parse()
+                .context("Failed to parse IPv4 bind address")?;
         }
 
         // Also respect the explicit ipv4_only flag
         if config.connection.ipv4_only {
-            client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
+            client_config.bind = "0.0.0.0:0"
+                .parse()
+                .context("Failed to parse IPv4 bind address")?;
         }
 
         let client = client_config
@@ -208,9 +257,10 @@ impl MoqSession {
             last_connection_time: None,
             current_session: None,
             broadcast: None,
+            broadcast_consumer: None,
         }));
 
-        let session = Self {
+        let mut session = Self {
             config,
             session_type: session_type.clone(),
             client,
@@ -226,20 +276,32 @@ impl MoqSession {
             event_tx,
             event_rx: Arc::new(RwLock::new(Some(event_rx))),
             announcement_tx,
-            subscription_manager: Arc::new(RwLock::new(None)),
+            broadcast_subscription_manager: Arc::new(RwLock::new(None)),
             shutdown_tx,
             shutdown_rx,
             log_callback: Arc::new(RwLock::new(None)),
+            broadcast_announced_callback: Arc::new(RwLock::new(None)),
+            broadcast_cancelled_callback: Arc::new(RwLock::new(None)),
+            connection_closed_callback: Arc::new(RwLock::new(None)),
+            data_callback: Arc::new(RwLock::new(None)),
         };
 
-        // Initialize subscription manager after session creation
-        *session.subscription_manager.write().await =
-            Some(SubscriptionManager::new(session.clone()));
+        // loop through tracks and add
+        for track_def in tracks.iter() {
+            session.add_track_definition(track_def.clone())?;
+        }
+
+        // Set catalog if needed (only for publishers)
+        if matches!(session_type, SessionType::Publisher) && catalog_type != CatalogType::None {
+            let catalog = Catalog::new(catalog_type.clone(), &tracks)
+                .ok_or_else(|| anyhow::anyhow!("Failed to create catalog"))?;
+            session.set_catalog(catalog)?;
+        }
 
         Ok(session)
     }
 
-    /// Start the session and handle connections/reconnections
+    /// Start the session and connect once (no reconnection logic)
     pub async fn start(&self) -> Result<()> {
         session_log!(self, info, "Starting MoQ session: {:?}", self.session_type);
 
@@ -253,165 +315,148 @@ impl MoqSession {
         let announcement_tx = self.announcement_tx.clone();
         let session_clone = self.clone();
 
+        // Get callback references for announcements
+        let broadcast_announced_cb = self.broadcast_announced_callback.clone();
+        let broadcast_cancelled_cb = self.broadcast_cancelled_callback.clone();
+        let connection_closed_cb = self.connection_closed_callback.clone();
+
         tokio::spawn(async move {
-            let mut reconnect_delay = config.connection.reconnect_delay;
-
-            loop {
-                // Check for shutdown signal
-                if *shutdown_rx.borrow() {
-                    info!("Shutdown signal received, stopping session");
-                    break;
-                }
-
-                let result = Self::establish_connection(
-                    &config,
-                    &client,
-                    &session_type,
-                    &broadcast_name,
-                    state.clone(),
-                    event_tx.clone(),
-                    announcement_tx.clone(),
-                )
-                .await;
-
-                match result {
-                    Ok(session_handle) => {
-                        info!("Successfully established MoQ connection");
-
-                        // Reset reconnection state on successful connection
-                        {
-                            let mut state_guard = state.write().await;
-                            state_guard.connected = true;
-                            state_guard.connection_attempts = 0;
-                            state_guard.last_connection_time = Some(Instant::now());
-                            state_guard.current_session = Some(session_handle.clone());
-                        }
-
-                        reconnect_delay = config.connection.reconnect_delay;
-
-                        // Create track producers for publisher sessions on every connection
-                        if matches!(session_type, SessionType::Publisher) {
-                            let session_for_tracks = session_clone.clone();
-                            // Create track producers before sending Connected event
-                            if let Err(e) = session_for_tracks.create_track_producers().await {
-                                warn!("Failed to create track producers: {}", e);
-                                let _ = event_tx.send(SessionEvent::Error {
-                                    error: format!("Failed to create track producers: {}", e),
-                                });
-                            } else {
-                                info!("Successfully created track producers");
-                                // Only send Connected event after track producers are ready
-                                let _ = event_tx.send(SessionEvent::Connected);
-                            }
-                        } else {
-                            // For subscribers, send Connected immediately
-                            let _ = event_tx.send(SessionEvent::Connected);
-                        }
-
-                        // Auto-subscribe to requested tracks for subscriber sessions
-                        if matches!(session_type, SessionType::Subscriber) {
-                            let session_for_auto_sub = session_clone.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) =
-                                    session_for_auto_sub.auto_subscribe_to_tracks().await
-                                {
-                                    warn!("Failed to auto-subscribe to tracks: {}", e);
-                                }
-                            });
-                        }
-
-                        // Wait for session to close or shutdown signal
-                        tokio::select! {
-                            result = session_handle.session.closed() => {
-                                match result {
-                                    Ok(()) => {
-                                        info!("Session closed normally");
-                                        let _ = event_tx.send(SessionEvent::Disconnected {
-                                            reason: "Session closed normally".to_string()
-                                        });
-                                    }
-                                    Err(e) => {
-                                        error!("Session closed with error: {}", e);
-                                        let _ = event_tx.send(SessionEvent::Disconnected {
-                                            reason: format!("Session error: {}", e)
-                                        });
-                                    }
-                                }
-                            }
-                            _ = shutdown_rx.changed() => {
-                                if *shutdown_rx.borrow() {
-                                    info!("Shutdown requested, closing session");
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Mark as disconnected and clean up session state
-                        {
-                            let mut state_guard = state.write().await;
-                            state_guard.connected = false;
-                            state_guard.current_session = None;
-                            state_guard.broadcast = None; // Clear broadcast so it gets recreated on reconnection
-                        }
-
-                        // Clear current groups and reset catalog published flag for reconnection
-                        {
-                            let session_for_cleanup = session_clone.clone();
-                            tokio::spawn(async move {
-                                session_for_cleanup.current_groups.write().await.clear();
-                                *session_for_cleanup.catalog_published.write().await = false;
-                                info!("Cleared session state for reconnection");
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        let mut state_guard = state.write().await;
-                        state_guard.connected = false;
-                        state_guard.connection_attempts += 1;
-                        state_guard.current_session = None;
-
-                        error!(
-                            "Failed to establish connection (attempt {}): {}",
-                            state_guard.connection_attempts, e
-                        );
-
-                        let _ = event_tx.send(SessionEvent::Error {
-                            error: format!("Connection failed: {}", e),
-                        });
-
-                        // Always continue reconnecting if auto_reconnect is enabled
-                        // We never give up as long as auto_reconnect is true
-                        if !config.auto_reconnect {
-                            error!("Auto-reconnect disabled, giving up");
-                            let _ = event_tx.send(SessionEvent::Error {
-                                error: "Reconnection disabled".to_string(),
-                            });
-                            break;
-                        }
-
-                        drop(state_guard);
-                    }
-                }
-
-                // If auto-reconnect is disabled and we're not connected, break
-                if !config.auto_reconnect {
-                    break;
-                }
-
-                // Wait before attempting to reconnect
-                debug!("Waiting {:?} before reconnection attempt", reconnect_delay);
-                info!(
-                    "Attempting to reconnect... (attempt {} - will continue indefinitely)",
-                    state.read().await.connection_attempts + 1
-                );
-                sleep(reconnect_delay).await;
-
-                // Exponential backoff with maximum delay
-                reconnect_delay =
-                    std::cmp::min(reconnect_delay * 2, config.connection.max_reconnect_delay);
+            // Check for shutdown signal before connecting
+            if *shutdown_rx.borrow() {
+                info!("Shutdown signal received before connection, stopping session");
+                return;
             }
 
-            info!("Session management task terminated");
+            let result = Self::establish_connection(
+                &config,
+                &client,
+                &session_type,
+                &broadcast_name,
+                state.clone(),
+                event_tx.clone(),
+                announcement_tx.clone(),
+            )
+            .await;
+
+            match result {
+                Ok(session_handle) => {
+                    info!("Successfully established MoQ connection");
+
+                    // Update connection state
+                    {
+                        let mut state_guard = state.write().await;
+                        state_guard.connected = true;
+                        state_guard.connection_attempts = 1;
+                        state_guard.last_connection_time = Some(Instant::now());
+                        state_guard.current_session = Some(session_handle.clone());
+                    }
+
+                    // Create track producers for publisher sessions
+                    if matches!(session_type, SessionType::Publisher) {
+                        let session_for_tracks = session_clone.clone();
+                        if let Err(e) = session_for_tracks.create_track_producers().await {
+                            warn!("Failed to create track producers: {}", e);
+                            let _ = event_tx.send(SessionEvent::Error {
+                                error: format!("Failed to create track producers: {}", e),
+                            });
+                        } else {
+                            debug!("Successfully created track producers");
+                            let _ = event_tx.send(SessionEvent::Connected);
+                        }
+                    } else {
+                        // Send Connected event after successful broadcast subscription
+                        let _ = event_tx.send(SessionEvent::Connected);
+
+                        // Setup announcement monitoring for both publishers and subscribers
+                        Self::monitor_announcements(
+                            session_handle.announcement_consumer,
+                            event_tx.clone(),
+                            announcement_tx.clone(),
+                            broadcast_announced_cb.clone(),
+                            broadcast_cancelled_cb.clone(),
+                            session_clone.clone(), // Pass session reference for BroadcastSubscriptionManager management
+                        )
+                        .await;
+                    }
+
+                    // Auto-subscription is now handled by BroadcastSubscriptionManager
+                    // Users should call enable_auto_subscription() to set up automatic catalog and track management
+
+                    // Wait for session to close or shutdown signal
+                    let disconnect_reason = tokio::select! {
+                        result = session_handle.session.closed() => {
+                            match result {
+                                Ok(()) => {
+                                    info!("Session closed normally");
+                                    "Session closed normally".to_string()
+                                }
+                                Err(e) => {
+                                    error!("Session closed with error: {}", e);
+                                    format!("Session error: {}", e)
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                info!("Shutdown requested, closing session");
+                                "Shutdown requested".to_string()
+                            } else {
+                                "Unknown shutdown reason".to_string()
+                            }
+                        }
+                    };
+
+                    // Call connection closed callback if set
+                    let callback_guard = connection_closed_cb.read().await;
+                    if let Some(callback) = callback_guard.as_ref() {
+                        callback(&disconnect_reason);
+                    }
+                    drop(callback_guard);
+
+                    // Send disconnected event
+                    let _ = event_tx.send(SessionEvent::Disconnected {
+                        reason: disconnect_reason,
+                    });
+
+                    // Mark as disconnected and clean up session state
+                    {
+                        let mut state_guard = state.write().await;
+                        state_guard.connected = false;
+                        state_guard.current_session = None;
+                        state_guard.broadcast = None;
+                        state_guard.broadcast_consumer = None;
+                    }
+
+                    // Clear session state
+                    session_clone.current_groups.write().await.clear();
+                    *session_clone.catalog_published.write().await = false;
+
+                    debug!("Session closed and cleaned up");
+                }
+                Err(e) => {
+                    let mut state_guard = state.write().await;
+                    state_guard.connected = false;
+                    state_guard.connection_attempts = 1;
+                    state_guard.current_session = None;
+
+                    error!("Failed to establish connection: {}", e);
+
+                    // Call connection closed callback if set
+                    let callback_guard = connection_closed_cb.read().await;
+                    if let Some(callback) = callback_guard.as_ref() {
+                        callback(&format!("Connection failed: {}", e));
+                    }
+                    drop(callback_guard);
+
+                    let _ = event_tx.send(SessionEvent::Error {
+                        error: format!("Connection failed: {}", e),
+                    });
+
+                    drop(state_guard);
+                }
+            }
+
+            debug!("Session management task terminated");
         });
 
         Ok(())
@@ -423,8 +468,8 @@ impl MoqSession {
         session_type: &SessionType,
         broadcast_name: &str,
         state: Arc<RwLock<SessionState>>,
-        event_tx: mpsc::UnboundedSender<SessionEvent>,
-        announcement_tx: broadcast::Sender<String>,
+        _event_tx: mpsc::UnboundedSender<SessionEvent>,
+        _announcement_tx: broadcast::Sender<String>,
     ) -> Result<SessionHandle> {
         debug!("Establishing connection to: {}", config.connection.url);
 
@@ -436,6 +481,9 @@ impl MoqSession {
 
         // Set up origin for publish/subscribe operations
         let origin = Origin::produce();
+
+        // Clone the consumer for announcement monitoring before using it
+        let announcement_consumer = origin.consumer.consume();
 
         let (origin_consumer, origin_producer, broadcast_handle) = match session_type {
             SessionType::Publisher => {
@@ -450,17 +498,12 @@ impl MoqSession {
                 // Store broadcast handle for later track creation
                 let broadcast_handle = Some(BroadcastHandle {
                     producer: Some(broadcast_produce.producer),
-                    consumer: None,
                 });
 
                 // For session connection, we provide the consumer and no producer
                 (Some(origin.consumer), None, broadcast_handle)
             }
-            SessionType::Subscriber => {
-                // For subscribing, we provide the producer to the session
-                // and keep the consumer to receive announcements
-                (None, Some(origin.producer), None)
-            }
+            SessionType::Subscriber => (None, Some(origin.producer), None),
         };
 
         // Perform MoQ handshake
@@ -472,6 +515,7 @@ impl MoqSession {
             session: Arc::new(session),
             origin_producer: origin_producer.clone(),
             origin_consumer: origin_producer.map(|p| p.consume()),
+            announcement_consumer,
         };
 
         // Store broadcast handle in state if we're a publisher
@@ -480,50 +524,55 @@ impl MoqSession {
             state_guard.broadcast = Some(broadcast_handle);
         }
 
-        // For subscribers, start monitoring announcements
-        if let SessionType::Subscriber = session_type {
-            if let Some(origin_consumer) = &session_handle.origin_consumer {
-                Self::monitor_announcements(
-                    origin_consumer.clone(),
-                    event_tx.clone(),
-                    announcement_tx.clone(),
-                )
-                .await;
-            }
-        }
+        // For subscribers, we'll start announcement monitoring after connection in start()
+        // to avoid having two consumers competing for the same stream
 
         Ok(session_handle)
     }
 
-    #[allow(dead_code)]
-    async fn setup_publisher_broadcast(_state: Arc<RwLock<SessionState>>) -> Result<()> {
-        // This method would be called to setup the broadcast after connection
-        // For now, we'll set it up when tracks are actually used
-        Ok(())
-    }
-
-    /// Set up broadcast for a publisher session
+    /// Set up broadcast monitoring with callbacks (called from start method with full session access)
     async fn monitor_announcements(
         mut origin_consumer: OriginConsumer,
         event_tx: mpsc::UnboundedSender<SessionEvent>,
         announcement_tx: broadcast::Sender<String>,
+        broadcast_announced_cb: Arc<RwLock<Option<BroadcastAnnouncedCallback>>>,
+        broadcast_cancelled_cb: Arc<RwLock<Option<BroadcastCancelledCallback>>>,
+        session: MoqSession, // Add session reference to handle BroadcastSubscriptionManager lifecycle
     ) {
         tokio::spawn(async move {
             while let Some((path, broadcast)) = origin_consumer.announced().await {
                 match broadcast {
                     Some(_) => {
-                        debug!("Broadcast announced: {}", path);
                         let _ = event_tx.send(SessionEvent::BroadcastAnnounced {
                             path: path.to_string(),
                         });
-                        // Also send to internal broadcast channel for ResilientTrackConsumer
+                        // Also send to internal broadcast channel for BroadcastSubscriptionManager
                         let _ = announcement_tx.send(path.to_string());
+
+                        // Handle announcement for our namespace - create or recreate BroadcastSubscriptionManager
+                        if path.as_ref() == session.broadcast_name {
+                            let _ = session.create_or_recreate_manager().await;
+                        }
+
+                        // Call the broadcast announced callback if set
+                        let callback_guard = broadcast_announced_cb.read().await;
+                        if let Some(callback) = callback_guard.as_ref() {
+                            callback(path.as_ref());
+                        }
                     }
                     None => {
                         debug!("Broadcast unannounced: {}", path);
                         let _ = event_tx.send(SessionEvent::BroadcastUnannounced {
                             path: path.to_string(),
                         });
+
+                        // Catalog cache clearing is now handled by BroadcastSubscriptionManager
+
+                        // Call the broadcast cancelled callback if set
+                        let callback_guard = broadcast_cancelled_cb.read().await;
+                        if let Some(callback) = callback_guard.as_ref() {
+                            callback(path.as_ref());
+                        }
                     }
                 }
             }
@@ -576,6 +625,125 @@ impl MoqSession {
 
         Ok(())
     }
+
+    /// Set callback for when a broadcast is announced as active
+    pub async fn set_broadcast_announced_callback(&self, callback: BroadcastAnnouncedCallback) {
+        *self.broadcast_announced_callback.write().await = Some(callback);
+    }
+
+    /// Set callback for when a broadcast is cancelled or connection is closed
+    pub async fn set_broadcast_cancelled_callback(&self, callback: BroadcastCancelledCallback) {
+        *self.broadcast_cancelled_callback.write().await = Some(callback);
+    }
+
+    /// Set callback for when connection is closed
+    pub async fn set_connection_closed_callback(&self, callback: ConnectionClosedCallback) {
+        *self.connection_closed_callback.write().await = Some(callback);
+    }
+
+    // clear_catalog_cache method removed - catalog caching is now handled by BroadcastSubscriptionManager
+
+    /// Create a BroadcastSubscriptionManager for a specific broadcast
+    /// This is the recommended way to subscribe to broadcasts with catalog support
+    pub async fn create_subscription_manager(
+        &self,
+        broadcast_name: String,
+        catalog_type: CatalogType,
+        requested_tracks: Vec<TrackDefinition>,
+    ) -> Result<crate::subscription_manager::BroadcastSubscriptionManager> {
+        crate::subscription_manager::BroadcastSubscriptionManager::new(
+            self.clone(),
+            broadcast_name,
+            catalog_type,
+            requested_tracks,
+        )
+        .await
+    }
+
+    /// Set data callback for the internal subscription manager
+    /// Stores the callback in session and applies it to existing manager if present
+    pub async fn set_subscription_data_callback<F>(&self, callback: F) -> Result<()>
+    where
+        F: Fn(String, Vec<u8>) + Send + Sync + 'static,
+    {
+        // Store the callback in the session for future manager creation/recreation
+        let callback_arc = Arc::new(callback);
+        *self.data_callback.write().await = Some(callback_arc.clone());
+        debug!("Data callback stored in session");
+
+        // Apply to existing manager if present
+        if let Some(manager) = self.broadcast_subscription_manager.read().await.as_ref() {
+            debug!("Applying data callback to existing BroadcastSubscriptionManager");
+            manager
+                .set_data_callback(move |track: String, data: Vec<u8>| {
+                    callback_arc(track, data);
+                })
+                .await;
+        } else {
+            debug!("No existing BroadcastSubscriptionManager to apply callback to");
+        }
+
+        Ok(())
+    }
+
+    /// Create or recreate the BroadcastSubscriptionManager with stored configuration
+    /// This is the single place where the manager is created
+    async fn create_or_recreate_manager(&self) -> Result<()> {
+        // Stop existing manager if present
+        if let Some(manager) = self.broadcast_subscription_manager.write().await.take() {
+            debug!("Stopping existing BroadcastSubscriptionManager");
+            manager.stop().await;
+        }
+
+        // For subscriber sessions, subscribe to the broadcast first to ensure broadcast_consumer is available
+        if matches!(self.session_type, SessionType::Subscriber) {
+            debug!(
+                "Subscribing to broadcast '{}' before creating manager",
+                self.broadcast_name
+            );
+            if let Err(e) = self.subscribe_broadcast(&self.broadcast_name).await {
+                warn!(
+                    "Failed to subscribe to broadcast '{}': {}",
+                    self.broadcast_name, e
+                );
+                return Err(e);
+            }
+        }
+
+        // Get configuration from session storage
+        let catalog_type = self.catalog_type.read().await.clone();
+        let requested_tracks = self.requested_tracks.read().await.clone();
+        let data_callback = self.data_callback.read().await.clone();
+
+        // Create the new manager
+        match self
+            .create_subscription_manager(
+                self.broadcast_name.clone(),
+                catalog_type,
+                requested_tracks,
+            )
+            .await
+        {
+            Ok(new_manager) => {
+                // Set the data callback if one exists
+                if let Some(callback) = data_callback {
+                    new_manager
+                        .set_data_callback(move |track: String, data: Vec<u8>| {
+                            callback(track, data);
+                        })
+                        .await;
+                }
+
+                // Store the new manager
+                *self.broadcast_subscription_manager.write().await = Some(new_manager);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("Failed to create BroadcastSubscriptionManager: {}", e);
+                Err(e)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -596,7 +764,6 @@ impl MoqSession {
 
         let track_handle = TrackHandle {
             producer: None, // Will be created when session connects
-            consumer: None,
             track_info: track,
             track_definition: Some(track_def.clone()),
         };
@@ -618,7 +785,7 @@ impl MoqSession {
                     .await
                     .insert(track_def.name.clone(), random_start);
 
-                info!(
+                debug!(
                     "Track '{}' initialized with random starting group sequence: {}",
                     track_def.name, random_start
                 );
@@ -630,7 +797,7 @@ impl MoqSession {
             })
         });
 
-        info!(
+        debug!(
             "Added track definition: {} ({})",
             track_def.name, track_def.track_type
         );
@@ -655,7 +822,7 @@ impl MoqSession {
         let catalog_track = TrackDefinition::data("catalog.json", u32::MAX); // Highest priority
         self.add_track_definition(catalog_track)?;
 
-        info!("Set catalog for publisher");
+        debug!("Set catalog for publisher");
         Ok(())
     }
 
@@ -667,7 +834,7 @@ impl MoqSession {
             })
         });
 
-        info!("Set catalog type: {:?}", catalog_type);
+        debug!("Set catalog type: {:?}", catalog_type);
         Ok(())
     }
 
@@ -716,20 +883,11 @@ impl MoqSession {
                 if let Some(track_producer) = &catalog_handle.producer {
                     let mut track_producer = track_producer.clone();
                     track_producer.write_frame(Bytes::from(catalog_json));
-                    info!("Published catalog data");
+                    debug!("Published catalog data");
                 }
             }
         }
         Ok(())
-    }
-    /// Add a track to the session (legacy method for backward compatibility)
-    pub fn add_track(&mut self, track: Track) -> Result<()> {
-        let track_def = TrackDefinition {
-            name: track.name.clone(),
-            priority: track.priority.into(),
-            track_type: crate::catalog::TrackType::Data, // Default to data
-        };
-        self.add_track_definition(track_def)
     }
 
     /// Start a new group for the specified track
@@ -943,7 +1101,7 @@ impl MoqSession {
                 if handle.producer.is_none() {
                     let track_producer = broadcast_producer.create_track(handle.track_info.clone());
                     handle.producer = Some(track_producer);
-                    info!("Created track producer for: {}", name);
+                    debug!("Created track producer for: {}", name);
                 }
             }
             drop(tracks); // Release lock before catalog publishing
@@ -964,7 +1122,7 @@ impl MoqSession {
             if let Err(e) = self.publish_catalog().await {
                 warn!("Failed to publish catalog: {}", e);
             } else {
-                info!("Published catalog data after track setup");
+                debug!("Published catalog data after track setup");
             }
         }
 
@@ -972,38 +1130,17 @@ impl MoqSession {
     }
 
     /// Set a data callback for receiving track data automatically
-    pub async fn set_data_callback<F>(&self, callback: F)
+    /// This is an alias for set_subscription_data_callback for backward compatibility
+    pub async fn set_data_callback<F>(&self, callback: F) -> Result<()>
     where
         F: Fn(String, Vec<u8>) + Send + Sync + 'static,
     {
-        let subscription_manager = self.subscription_manager.read().await;
-        if let Some(manager) = subscription_manager.as_ref() {
-            manager.set_data_callback(Arc::new(callback)).await;
-        }
-    }
-
-    /// Subscribe to a track with automatic data callback handling
-    pub async fn subscribe_track_with_callback(
-        &self,
-        broadcast_name: &str,
-        track_name: &str,
-    ) -> Result<()> {
-        if !matches!(self.session_type, SessionType::Subscriber) {
-            return Err(WrapperError::Session("Not a subscriber session".to_string()).into());
-        }
-
-        let subscription_manager = self.subscription_manager.read().await;
-        if let Some(manager) = subscription_manager.as_ref() {
-            manager
-                .subscribe_track_with_callback(broadcast_name, track_name)
-                .await?;
-        }
-        Ok(())
+        self.set_subscription_data_callback(callback).await
     }
 
     /// Close the session and stop all operations
     pub async fn close_session(&self) -> Result<()> {
-        info!("🔒 Closing MoQ session");
+        debug!("Closing MoQ session");
 
         // Send shutdown signal
         if let Err(e) = self.shutdown_tx.send(true) {
@@ -1016,6 +1153,7 @@ impl MoqSession {
             state.connected = false;
             state.current_session = None;
             state.broadcast = None;
+            state.broadcast_consumer = None;
         }
 
         // Clear tracks and groups
@@ -1025,59 +1163,12 @@ impl MoqSession {
             self.sequence_numbers.write().await.clear();
         }
 
-        // Shutdown subscription manager
-        {
-            let mut subscription_manager = self.subscription_manager.write().await;
-            if let Some(manager) = subscription_manager.as_ref() {
-                if let Err(e) = manager.shutdown().await {
-                    warn!("Failed to shutdown subscription manager: {}", e);
-                }
-            }
-            *subscription_manager = None;
+        // Shutdown broadcast subscription manager
+        if let Some(manager) = self.broadcast_subscription_manager.read().await.as_ref() {
+            manager.stop().await;
         }
 
-        info!("Session closed successfully");
-        Ok(())
-    }
-
-    /// Auto-subscribe to all requested tracks for subscriber sessions
-    async fn auto_subscribe_to_tracks(&self) -> Result<()> {
-        // Only auto-subscribe for subscriber sessions
-        if !matches!(self.session_type, SessionType::Subscriber) {
-            return Ok(());
-        }
-
-        // Get the list of requested tracks
-        let requested_tracks = self.requested_tracks.read().await.clone();
-
-        if requested_tracks.is_empty() {
-            debug!("No tracks requested for auto-subscription");
-            return Ok(());
-        }
-
-        info!(
-            "Auto-subscribing to {} requested tracks",
-            requested_tracks.len()
-        );
-
-        // Subscribe to each requested track with callback support
-        for track_def in requested_tracks {
-            match self
-                .subscribe_track_with_callback(&self.broadcast_name, &track_def.name)
-                .await
-            {
-                Ok(()) => {
-                    info!("Auto-subscribed to track: {}", track_def.name);
-                }
-                Err(e) => {
-                    warn!(
-                        "⚠️ Failed to auto-subscribe to track {}: {}",
-                        track_def.name, e
-                    );
-                }
-            }
-        }
-
+        debug!("Session closed successfully");
         Ok(())
     }
 }
@@ -1085,79 +1176,49 @@ impl MoqSession {
 /// Subscriber-specific functionality  
 impl MoqSession {
     /// Subscribe to a broadcast (only available for subscriber sessions)
+    /// This method can only be called once per session during connection establishment
     pub async fn subscribe_broadcast(&self, broadcast_name: &str) -> Result<BroadcastConsumer> {
         debug!(
-            "📻 [MoqSession] subscribe_broadcast called for: {}",
+            "[MoqSession] subscribe_broadcast called for: '{}'",
             broadcast_name
         );
 
-        let state = self.state.read().await;
+        let mut state = self.state.write().await;
+        let session_handle = state
+            .current_session
+            .as_ref()
+            .ok_or_else(|| WrapperError::Session("Not connected".to_string()))?;
 
-        let session_handle = state.current_session.as_ref().ok_or_else(|| {
-            let err = WrapperError::Session("Not connected".to_string());
-            error!(
-                "❌ [MoqSession] subscribe_broadcast failed - session not connected: {}",
-                err
-            );
-            err
-        })?;
-
-        if let SessionType::Subscriber = self.session_type {
-            if let Some(origin_consumer) = &session_handle.origin_consumer {
-                debug!(
-                    "[MoqSession] Calling consume_broadcast on OriginConsumer for: {}",
-                    broadcast_name
-                );
-                match origin_consumer.consume_broadcast(broadcast_name) {
-                    Some(broadcast_consumer) => {
-                        debug!(
-                            "[MoqSession] Successfully consumed broadcast: {}",
-                            broadcast_name
-                        );
-                        Ok(broadcast_consumer)
-                    }
-                    None => {
-                        let err = WrapperError::BroadcastNotFound(broadcast_name.to_string());
-                        debug!("⚠️ [MoqSession] Broadcast not found: {}", err);
-                        Err(err.into())
-                    }
-                }
-            } else {
-                let err = WrapperError::Session("No origin consumer available".to_string());
-                error!(
-                    "❌ [MoqSession] subscribe_broadcast failed - no origin consumer: {}",
-                    err
-                );
-                Err(err.into())
-            }
-        } else {
-            let err = WrapperError::Session("Not a subscriber session".to_string());
-            error!(
-                "❌ [MoqSession] subscribe_broadcast failed - not a subscriber: {}",
-                err
-            );
-            Err(err.into())
-        }
-    }
-
-    /// Subscribe to a track with catalog validation and automatic reconnection
-    pub async fn subscribe_track(
-        &self,
-        broadcast_name: &str,
-        track_name: &str,
-    ) -> Result<ResilientTrackConsumer> {
         if !matches!(self.session_type, SessionType::Subscriber) {
             return Err(WrapperError::Session("Not a subscriber session".to_string()).into());
         }
 
-        let resilient_consumer = ResilientTrackConsumer::new(
-            self.clone(),
-            broadcast_name.to_string(),
-            track_name.to_string(),
-        )
-        .await?;
+        if let Some(origin_consumer) = &session_handle.origin_consumer {
+            match origin_consumer.consume_broadcast(broadcast_name) {
+                Some(broadcast_consumer) => {
+                    info!(
+                        "[MoqSession] Successfully consumed broadcast: '{}'",
+                        broadcast_name
+                    );
+                    // Store the broadcast consumer in session state for later use
+                    state.broadcast_consumer = Some(broadcast_consumer.clone());
+                    Ok(broadcast_consumer)
+                }
+                None => Err(WrapperError::BroadcastNotFound(broadcast_name.to_string()).into()),
+            }
+        } else {
+            Err(WrapperError::Session("No origin consumer available".to_string()).into())
+        }
+    }
 
-        Ok(resilient_consumer)
+    /// Get the stored broadcast consumer (used internally by track subscriptions)
+    pub async fn get_broadcast_consumer(&self) -> Result<BroadcastConsumer> {
+        let state = self.state.read().await;
+        if let Some(broadcast_consumer) = &state.broadcast_consumer {
+            Ok(broadcast_consumer.clone())
+        } else {
+            Err(WrapperError::Session("No broadcast consumer available - session may not be connected or subscriber not initialized".to_string()).into())
+        }
     }
 
     /// Internal method to subscribe to a track without the resilient wrapper
@@ -1166,290 +1227,18 @@ impl MoqSession {
         broadcast_name: &str,
         track_name: &str,
     ) -> Result<TrackConsumer> {
-        debug!(
-            "[MoqSession] subscribe_track_internal called for track: {} in broadcast: {}",
-            track_name, broadcast_name
-        );
-
-        // Check if catalog validation is needed
-        let catalog_type = self.catalog_type.read().await.clone();
-        if catalog_type != CatalogType::None {
-            debug!(
-                "📋 [MoqSession] Catalog validation needed for track: {}",
-                track_name
-            );
-            // First, validate against catalog
-            self.validate_track_against_catalog(track_name).await?;
-            debug!(
-                "[MoqSession] Catalog validation passed for track: {}",
-                track_name
-            );
-        }
-
-        debug!(
-            "[MoqSession] Calling subscribe_broadcast for: {}",
-            broadcast_name
-        );
-        let broadcast = self.subscribe_broadcast(broadcast_name).await?;
-        debug!(
-            "[MoqSession] Successfully got broadcast: {}",
-            broadcast_name
-        );
-
+        let broadcast = self.get_broadcast_consumer().await?;
         let track = Track {
             name: track_name.to_string(),
             priority: 0, // Priority doesn't matter for subscription
         };
 
-        debug!(
-            "🎵 [MoqSession] Calling subscribe_track on broadcast for track: {}",
-            track_name
-        );
         let track_consumer = broadcast.subscribe_track(&track);
 
-        info!(
+        debug!(
             "[MoqSession] Subscribed to track: {} in broadcast: {}",
             track_name, broadcast_name
         );
         Ok(track_consumer)
-    }
-
-    /// Validate that a track exists in the published catalog
-    async fn validate_track_against_catalog(&self, track_name: &str) -> Result<()> {
-        // If it's catalog.json itself, allow it
-        if track_name == "catalog.json" {
-            return Ok(());
-        }
-
-        let catalog_type = self.catalog_type.read().await.clone();
-        if catalog_type == CatalogType::None {
-            return Ok(()); // No validation needed
-        }
-
-        // Subscribe to catalog.json and parse it
-        let catalog_json = self.fetch_catalog().await?;
-
-        match catalog_type {
-            CatalogType::Sesame => {
-                let catalog = Catalog::parse_sesame(&catalog_json).map_err(|e| {
-                    WrapperError::Session(format!("Failed to parse Sesame catalog: {}", e))
-                })?;
-
-                if catalog.find_track(track_name).is_none() {
-                    return Err(WrapperError::TrackNotFound(format!(
-                        "Track '{}' not found in published catalog",
-                        track_name
-                    ))
-                    .into());
-                }
-            }
-            CatalogType::Hang => {
-                // TODO: Implement Hang catalog parsing when available
-                warn!(
-                    "Hang catalog validation not yet implemented, allowing track: {}",
-                    track_name
-                );
-            }
-            CatalogType::None => unreachable!(),
-        }
-
-        Ok(())
-    }
-
-    /// Fetch catalog.json from the broadcast
-    async fn fetch_catalog(&self) -> Result<String> {
-        // Try to subscribe to catalog.json track
-        let broadcast = self
-            .subscribe_broadcast(&self.config.broadcast_name)
-            .await?;
-        let catalog_track = Track {
-            name: "catalog.json".to_string(),
-            priority: 0,
-        };
-
-        let mut track_consumer = broadcast.subscribe_track(&catalog_track);
-
-        // Read the first group/frame which should contain the catalog
-        if let Some(mut group) = track_consumer.next_group().await? {
-            if let Some(frame) = group.read_frame().await? {
-                let catalog_json = String::from_utf8_lossy(&frame).to_string();
-                info!("Fetched catalog: {} bytes", catalog_json.len());
-                return Ok(catalog_json);
-            }
-        }
-
-        Err(WrapperError::Session("No catalog data found".to_string()).into())
-    }
-}
-
-/// A resilient wrapper around TrackConsumer that handles reconnections automatically
-/// Simple event-driven approach: Connect -> Wait for announce -> Subscribe -> Unannounce/Error -> Close -> Repeat
-pub struct ResilientTrackConsumer {
-    session: MoqSession,
-    broadcast_name: String,
-    track_name: String,
-    current_consumer: Arc<RwLock<Option<TrackConsumer>>>,
-}
-
-impl ResilientTrackConsumer {
-    async fn new(session: MoqSession, broadcast_name: String, track_name: String) -> Result<Self> {
-        let resilient = Self {
-            session: session.clone(),
-            broadcast_name: broadcast_name.clone(),
-            track_name: track_name.clone(),
-            current_consumer: Arc::new(RwLock::new(None)),
-        };
-
-        // Start the simple subscription manager
-        resilient.start_subscription_manager().await;
-
-        Ok(resilient)
-    }
-
-    /// Start the simple subscription manager that follows: Connect -> Announce -> Subscribe -> Unannounce/Error -> Close -> Repeat
-    /// Also listens for BroadcastAnnounced events to immediately reset on broadcaster reconnections
-    async fn start_subscription_manager(&self) {
-        let session = self.session.clone();
-        let broadcast_name = self.broadcast_name.clone();
-        let track_name = self.track_name.clone();
-        let current_consumer = self.current_consumer.clone();
-
-        // Start the subscription management task
-        let subscription_task = {
-            let session = session.clone();
-            let broadcast_name = broadcast_name.clone();
-            let track_name = track_name.clone();
-            let current_consumer = current_consumer.clone();
-
-            tokio::spawn(async move {
-                info!(
-                    "[ResilientTrackConsumer] Starting subscription manager for broadcast: {}",
-                    broadcast_name
-                );
-
-                loop {
-                    // Step 1: Wait for session to be connected
-                    while !session.is_connected().await {
-                        debug!("[ResilientTrackConsumer] Waiting for session connection...");
-                        sleep(Duration::from_millis(100)).await;
-                    }
-
-                    // Step 2: Check if we have a consumer
-                    let has_consumer = {
-                        let consumer_guard = current_consumer.read().await;
-                        consumer_guard.is_some()
-                    };
-
-                    if !has_consumer {
-                        // Step 3: Try to subscribe when we don't have a consumer
-                        match session
-                            .subscribe_track_internal(&broadcast_name, &track_name)
-                            .await
-                        {
-                            Ok(consumer) => {
-                                info!(
-                                    "[ResilientTrackConsumer] Successfully subscribed to track: {}",
-                                    track_name
-                                );
-                                *current_consumer.write().await = Some(consumer);
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "[ResilientTrackConsumer] Subscription failed (will retry): {}",
-                                    e
-                                );
-                            }
-                        }
-                    }
-
-                    // Step 4: Sleep before checking again
-                    sleep(Duration::from_millis(1000)).await;
-                }
-            })
-        };
-
-        // Start the broadcast announcement listener task
-        let announcement_task = {
-            let session = session.clone();
-            let broadcast_name = broadcast_name.clone();
-            let current_consumer = current_consumer.clone();
-
-            tokio::spawn(async move {
-                info!(
-                    "[ResilientTrackConsumer] Starting broadcast announcement listener for: {}",
-                    broadcast_name
-                );
-
-                let mut announcement_rx = session.subscribe_announcements();
-
-                loop {
-                    match announcement_rx.recv().await {
-                        Ok(announced_broadcast) => {
-                            if announced_broadcast == broadcast_name {
-                                info!("[ResilientTrackConsumer] Broadcast '{}' announced - resetting consumer for fresh connection", broadcast_name);
-
-                                // Immediately clear the current consumer to force a new subscription
-                                *current_consumer.write().await = None;
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!("[ResilientTrackConsumer] Announcement listener lagged, skipped {} messages", skipped);
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            debug!("[ResilientTrackConsumer] Announcement channel closed, exiting listener");
-                            break;
-                        }
-                    }
-                }
-            })
-        };
-
-        // Don't wait for tasks to complete - they run indefinitely
-        // Just spawn them and return
-        std::mem::drop(subscription_task);
-        std::mem::drop(announcement_task);
-    }
-
-    /// Get the next group, with automatic error handling that clears the consumer on errors
-    pub async fn next_group(&self) -> Result<Option<moq_lite::GroupConsumer>> {
-        loop {
-            // Check if we have a consumer and call next_group directly without cloning
-            let mut consumer_guard = self.current_consumer.write().await;
-
-            if let Some(ref mut consumer) = *consumer_guard {
-                match consumer.next_group().await {
-                    Ok(Some(group)) => {
-                        // Successfully got a group - consumer has advanced internally
-                        return Ok(Some(group));
-                    }
-                    Ok(None) => {
-                        // Stream ended normally - clear consumer and wait for reconnection
-                        warn!("[ResilientTrackConsumer] Track stream ended (Ok(None)), clearing consumer");
-                        *consumer_guard = None;
-                        drop(consumer_guard); // Release lock before sleeping
-                                              // Sleep briefly before retrying
-                        sleep(Duration::from_millis(100)).await;
-                        continue;
-                    }
-                    Err(e) => {
-                        // Error occurred - clear consumer and wait for reconnection
-                        warn!(
-                            "[ResilientTrackConsumer] Track stream error: {}, clearing consumer",
-                            e
-                        );
-                        *consumer_guard = None;
-                        drop(consumer_guard); // Release lock before sleeping
-                                              // Sleep briefly before retrying
-                        sleep(Duration::from_millis(100)).await;
-                        continue;
-                    }
-                }
-            } else {
-                drop(consumer_guard); // Release lock before sleeping
-                                      // No consumer available, wait for the subscription manager to create one
-                sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-        }
     }
 }

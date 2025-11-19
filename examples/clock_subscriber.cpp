@@ -55,6 +55,22 @@ namespace
               << ": " << data_str << std::endl;
   }
 
+  // New callback functions for broadcast events
+  void BroadcastAnnouncedCallback(const std::string &path)
+  {
+    std::cout << "🟢 BROADCAST ANNOUNCED: " << path << std::endl;
+  }
+
+  void BroadcastCancelledCallback(const std::string &path)
+  {
+    std::cout << "🔴 BROADCAST CANCELLED: " << path << std::endl;
+  }
+
+  void ConnectionClosedCallback(const std::string &reason)
+  {
+    std::cout << "❌ CONNECTION CLOSED: " << reason << std::endl;
+  }
+
 } // namespace
 
 // Session management thread function
@@ -93,6 +109,25 @@ void SessionManagerThread(const std::string &url, const std::string &broadcast,
     should_stop = true;
     return;
   }
+
+  // Set up the new broadcast event callbacks
+  std::cout << "[SESSION] Setting up broadcast event callbacks..." << std::endl;
+  if (!session->SetBroadcastAnnouncedCallback(BroadcastAnnouncedCallback))
+  {
+    std::cerr << "[SESSION] Failed to set broadcast announced callback" << std::endl;
+  }
+
+  if (!session->SetBroadcastCancelledCallback(BroadcastCancelledCallback))
+  {
+    std::cerr << "[SESSION] Failed to set broadcast cancelled callback" << std::endl;
+  }
+
+  if (!session->SetConnectionClosedCallback(ConnectionClosedCallback))
+  {
+    std::cerr << "[SESSION] Failed to set connection closed callback" << std::endl;
+  }
+
+  std::cout << "[SESSION] All callbacks configured successfully" << std::endl;
 
   // Wait for connection
   std::cout << "[SESSION] Connecting..." << std::endl;
@@ -183,7 +218,7 @@ int main(int argc, char *argv[])
   moq::SetLogLevel(moq::LogLevel::kInfo);
 
   // Parse command line arguments
-  std::string url = "https://relay1.moq.sesame-streams.com:4433";
+  std::string url = "https://r1.moq.sesame-streams.com:4433";
   std::string broadcast = "clock-cpp";
 
   if (argc > 1)
@@ -195,9 +230,15 @@ int main(int argc, char *argv[])
     broadcast = argv[2];
   }
 
-  std::cout << "MOQ Clock Subscriber (C++) - Multi-threaded Version" << std::endl;
+  std::cout << "MOQ Clock Subscriber (C++) - With Event Callbacks (No Reconnection)" << std::endl;
   std::cout << "Connecting to: " << url << std::endl;
   std::cout << "Subscribing to: " << broadcast << std::endl;
+  std::cout << std::endl;
+  std::cout << "New Features:" << std::endl;
+  std::cout << "• 🟢 Broadcast Announced callbacks - when a broadcast becomes active" << std::endl;
+  std::cout << "• 🔴 Broadcast Cancelled callbacks - when a broadcast is stopped" << std::endl;
+  std::cout << "• ❌ Connection Closed callbacks - when connection ends (no auto-reconnect)" << std::endl;
+  std::cout << std::endl;
 
   // Shared state between threads
   std::shared_ptr<moq::Session> session;

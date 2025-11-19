@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     });
 
     // Set up data callback for every frame with sequence tracking
-    set_data_callback(&session, {
+    let _ = set_data_callback(&session, {
         use std::sync::Mutex;
         let frame_counter = Arc::new(Mutex::new(std::collections::HashMap::<String, usize>::new()));
 

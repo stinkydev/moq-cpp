@@ -70,8 +70,8 @@ while (!session->IsConnected()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
-// Publish data (implementation needed)
-// session->PublishData("video", data, size);
+// Publish data
+session->PublishData("video", data, size);
 ```
 
 ### Creating a Subscriber

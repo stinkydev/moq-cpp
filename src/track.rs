@@ -54,7 +54,7 @@ impl TrackManager {
         broadcast_name: &str,
         track_name: &str,
     ) -> Result<TrackConsumer> {
-        let broadcast = self.session.subscribe_broadcast(broadcast_name).await?;
+        let broadcast = self.session.get_broadcast_consumer().await?;
         let track_consumer = broadcast.subscribe_track(&Track {
             name: track_name.to_string(),
             priority: 0, // Priority doesn't matter for subscription

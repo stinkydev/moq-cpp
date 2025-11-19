@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use moq_wrapper::{ConnectionConfig, MoqSession, SessionConfig, TrackManager};
+use moq_wrapper::{CatalogType, ConnectionConfig, MoqSession, SessionConfig, TrackManager};
 
 /// This is a basic integration test that doesn't require an actual relay server.
 /// It tests the API surface and basic functionality.
@@ -11,10 +11,22 @@ async fn test_session_creation() {
     let url = url::Url::parse("https://example.com/test").unwrap();
     let config = SessionConfig::new("test-broadcast", url);
 
-    let publisher = MoqSession::publisher(config.clone(), "test-broadcast".to_string()).await;
+    let publisher = MoqSession::publisher(
+        config.clone(),
+        "test-broadcast".to_string(),
+        CatalogType::None,
+        vec![],
+    )
+    .await;
     assert!(publisher.is_ok());
 
-    let subscriber = MoqSession::subscriber(config, "test-broadcast".to_string()).await;
+    let subscriber = MoqSession::subscriber(
+        config,
+        "test-broadcast".to_string(),
+        CatalogType::None,
+        vec![],
+    )
+    .await;
     assert!(subscriber.is_ok());
 }
 
@@ -24,9 +36,14 @@ async fn test_track_manager() {
     let config = SessionConfig::new("test-broadcast", url);
 
     let session = Arc::new(
-        MoqSession::publisher(config, "test-broadcast".to_string())
-            .await
-            .unwrap(),
+        MoqSession::publisher(
+            config,
+            "test-broadcast".to_string(),
+            CatalogType::None,
+            vec![],
+        )
+        .await
+        .unwrap(),
     );
     let track_manager = TrackManager::new(session);
 
@@ -43,9 +60,14 @@ async fn test_stream_publisher() {
     let config = SessionConfig::new("test-broadcast", url);
 
     let session = Arc::new(
-        MoqSession::publisher(config, "test-broadcast".to_string())
-            .await
-            .unwrap(),
+        MoqSession::publisher(
+            config,
+            "test-broadcast".to_string(),
+            CatalogType::None,
+            vec![],
+        )
+        .await
+        .unwrap(),
     );
     let track_manager = TrackManager::new(session);
 
@@ -69,7 +91,6 @@ async fn test_configuration() {
     let session_config = SessionConfig {
         broadcast_name: "test-config".to_string(),
         connection: connection_config,
-        auto_reconnect: true,
     };
 
     // Test that configuration is properly stored
@@ -79,7 +100,6 @@ async fn test_configuration() {
         session_config.connection.reconnect_delay,
         Duration::from_millis(500)
     );
-    assert!(session_config.auto_reconnect);
 }
 
 #[tokio::test]
@@ -87,9 +107,14 @@ async fn test_session_state() {
     let url = url::Url::parse("https://example.com/test").unwrap();
     let config = SessionConfig::new("test-broadcast", url);
 
-    let session = MoqSession::publisher(config, "test-broadcast".to_string())
-        .await
-        .unwrap();
+    let session = MoqSession::publisher(
+        config,
+        "test-broadcast".to_string(),
+        CatalogType::None,
+        vec![],
+    )
+    .await
+    .unwrap();
 
     // Should start disconnected
     assert!(!session.is_connected().await);

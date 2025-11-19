@@ -60,6 +60,11 @@ namespace moq
       std::function<void(const std::string &track, const uint8_t *data,
                          size_t size)>;
 
+  /// Event callback function types
+  using BroadcastAnnouncedCallback = std::function<void(const std::string &path)>;
+  using BroadcastCancelledCallback = std::function<void(const std::string &path)>;
+  using ConnectionClosedCallback = std::function<void(const std::string &reason)>;
+
   /// Track definition
   class MOQ_API TrackDefinition
   {
@@ -90,13 +95,19 @@ namespace moq
     void *handle_;
   };
 
-  /// Forward declaration for friend function
+  /// Forward declarations for friend functions
   extern "C" void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
+  extern "C" void SessionBroadcastAnnouncedWrapper(const char *);
+  extern "C" void SessionBroadcastCancelledWrapper(const char *);
+  extern "C" void SessionConnectionClosedWrapper(void *, const char *);
 
   /// MOQ Session wrapper
   class MOQ_API Session
   {
     friend void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
+    friend void SessionBroadcastAnnouncedWrapper(const char *);
+    friend void SessionBroadcastCancelledWrapper(const char *);
+    friend void SessionConnectionClosedWrapper(void *, const char *);
 
   public:
     /// Create a publisher session
@@ -119,6 +130,15 @@ namespace moq
     /// Set log callback for receiving session-specific log messages
     bool SetLogCallback(const LogCallback &callback);
 
+    /// Set callback for when a broadcast is announced as active
+    bool SetBroadcastAnnouncedCallback(const BroadcastAnnouncedCallback &callback);
+
+    /// Set callback for when a broadcast is cancelled
+    bool SetBroadcastCancelledCallback(const BroadcastCancelledCallback &callback);
+
+    /// Set callback for when connection is closed
+    bool SetConnectionClosedCallback(const ConnectionClosedCallback &callback);
+
     /// Write a frame to a track, optionally starting a new group
     /// @param track_name Name of the track
     /// @param data Pointer to the data
@@ -130,6 +150,12 @@ namespace moq
     /// Write a single frame in its own group (convenience method)
     /// Creates a new group, writes the frame, and closes the group
     bool WriteSingleFrame(const std::string &track_name, const uint8_t *data, size_t size);
+
+    /// Simplified publish data function that handles group creation internally
+    /// @param track_name Name of the track
+    /// @param data Pointer to the data
+    /// @param size Size of the data
+    bool PublishData(const std::string &track_name, const uint8_t *data, size_t size);
 
     /// Check if session is connected
     bool IsConnected() const;
@@ -143,6 +169,9 @@ namespace moq
     void *handle_;
     std::mutex callback_mutex_;
     std::unique_ptr<DataCallback> data_callback_;
+    std::unique_ptr<BroadcastAnnouncedCallback> broadcast_announced_callback_;
+    std::unique_ptr<BroadcastCancelledCallback> broadcast_cancelled_callback_;
+    std::unique_ptr<ConnectionClosedCallback> connection_closed_callback_;
   };
 
   /// Set the global log level for internal library tracing (optional)

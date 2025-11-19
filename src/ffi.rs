@@ -3,11 +3,12 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{Arc, RwLock};
 use tokio::runtime::Runtime;
-use tracing::Level;
+use tracing::{info, Level};
 
 use crate::{
-    close_session, create_publisher, create_subscriber, set_data_callback, set_log_level,
-    write_frame, write_single_frame, CatalogType, MoqSession, TrackDefinition, TrackType,
+    close_session, create_publisher, create_subscriber, publish_data, set_data_callback,
+    set_log_level, write_frame, write_single_frame, CatalogType, MoqSession, TrackDefinition,
+    TrackType,
 };
 
 // Opaque handles for C API
@@ -15,6 +16,9 @@ pub struct CMoqSession {
     session: Arc<MoqSession>,
     runtime: Arc<Runtime>,
     data_callback: Arc<RwLock<Option<CDataCallback>>>,
+    broadcast_announced_callback: Arc<RwLock<Option<CBroadcastAnnouncedCallback>>>,
+    broadcast_cancelled_callback: Arc<RwLock<Option<CBroadcastCancelledCallback>>>,
+    connection_closed_callback: Arc<RwLock<Option<CConnectionClosedCallback>>>,
 }
 
 // C-compatible struct for passing track definitions
@@ -67,6 +71,11 @@ pub enum MoqResult {
 // Callback types with session context
 pub type CLogCallback = extern "C" fn(*const c_char, c_int, *const c_char);
 pub type CDataCallback = extern "C" fn(*mut CMoqSession, *const c_char, *const u8, usize);
+
+// New callback types for broadcast events and connection status
+pub type CBroadcastAnnouncedCallback = extern "C" fn(*const c_char);
+pub type CBroadcastCancelledCallback = extern "C" fn(*const c_char);
+pub type CConnectionClosedCallback = extern "C" fn(*mut std::ffi::c_void, *const c_char);
 
 impl From<CLogLevel> for Level {
     fn from(level: CLogLevel) -> Self {
@@ -254,6 +263,9 @@ pub unsafe extern "C" fn moq_create_publisher(
         session,
         runtime,
         data_callback: Arc::new(RwLock::new(None)),
+        broadcast_announced_callback: Arc::new(RwLock::new(None)),
+        broadcast_cancelled_callback: Arc::new(RwLock::new(None)),
+        connection_closed_callback: Arc::new(RwLock::new(None)),
     };
 
     Box::into_raw(Box::new(c_session))
@@ -349,6 +361,9 @@ pub unsafe extern "C" fn moq_create_subscriber(
         session,
         runtime,
         data_callback: Arc::new(RwLock::new(None)),
+        broadcast_announced_callback: Arc::new(RwLock::new(None)),
+        broadcast_cancelled_callback: Arc::new(RwLock::new(None)),
+        connection_closed_callback: Arc::new(RwLock::new(None)),
     };
 
     Box::into_raw(Box::new(c_session))
@@ -375,13 +390,14 @@ pub unsafe extern "C" fn moq_session_set_data_callback(
     // Store the callback in the session structure
     if let Ok(mut cb) = session_ref.data_callback.write() {
         *cb = Some(callback);
+        info!("📞 Data callback stored in FFI session");
     }
 
     // Set up the Rust callback that will call the C callback with session context
     let session_addr = session as usize; // Convert to usize for thread safety
     let data_callback_ref = session_ref.data_callback.clone();
 
-    session_ref.runtime.block_on(set_data_callback(
+    let _ = session_ref.runtime.block_on(set_data_callback(
         &session_ref.session,
         move |track: String, data: Vec<u8>| {
             if let Ok(cb_guard) = data_callback_ref.read() {
@@ -436,6 +452,48 @@ pub unsafe extern "C" fn moq_write_single_frame(
         track_str,
         data_vec,
     )) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Simplified publish data function that handles group creation internally
+/// This corresponds to lib.rs publish_data()
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers.
+/// The caller must ensure that:
+/// - `session` is a valid pointer to a CMoqSession
+/// - `track_name` is a valid null-terminated C string
+/// - `data` points to a valid buffer of at least `data_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn moq_publish_data(
+    session: *mut CMoqSession,
+    track_name: *const c_char,
+    data: *const u8,
+    data_len: usize,
+) -> c_int {
+    if session.is_null() || track_name.is_null() || data.is_null() {
+        return -1;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    let track_str = unsafe {
+        match CStr::from_ptr(track_name).to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+
+    let data_slice = unsafe { std::slice::from_raw_parts(data, data_len) };
+    let data_vec = data_slice.to_vec();
+
+    match session_ref
+        .runtime
+        .block_on(publish_data(&session_ref.session, track_str, data_vec))
+    {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -583,15 +641,154 @@ pub unsafe extern "C" fn moq_session_set_log_callback(
 
 /// Free a MoQ session and its resources
 ///
+/// Set broadcast announced callback
+///
+/// # Safety
+/// The caller must ensure that `session` is a valid pointer returned from
+/// `moq_create_publisher` or `moq_create_subscriber`.
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_set_broadcast_announced_callback(
+    session: *mut CMoqSession,
+    callback: CBroadcastAnnouncedCallback,
+) -> c_int {
+    if session.is_null() {
+        return MoqResult::InvalidArgument as c_int;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    // Store the C callback
+    if let Ok(mut cb) = session_ref.broadcast_announced_callback.write() {
+        *cb = Some(callback);
+    }
+
+    // Set up the Rust callback that will call the C callback
+    let c_callback = session_ref.broadcast_announced_callback.clone();
+    let rust_callback = Box::new(move |path: &str| {
+        if let Ok(guard) = c_callback.read() {
+            if let Some(cb) = *guard {
+                let c_path = CString::new(path).unwrap_or_else(|_| CString::new("").unwrap());
+                cb(c_path.as_ptr());
+            }
+        }
+    });
+
+    // Set the callback in the session
+    session_ref.runtime.block_on(async {
+        session_ref
+            .session
+            .set_broadcast_announced_callback(rust_callback)
+            .await;
+    });
+
+    MoqResult::Success as c_int
+}
+
+/// Set broadcast cancelled callback
+///
+/// # Safety
+/// The caller must ensure that `session` is a valid pointer returned from
+/// `moq_create_publisher` or `moq_create_subscriber`.
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_set_broadcast_cancelled_callback(
+    session: *mut CMoqSession,
+    callback: CBroadcastCancelledCallback,
+) -> c_int {
+    if session.is_null() {
+        return MoqResult::InvalidArgument as c_int;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    // Store the C callback
+    if let Ok(mut cb) = session_ref.broadcast_cancelled_callback.write() {
+        *cb = Some(callback);
+    }
+
+    // Set up the Rust callback that will call the C callback
+    let c_callback = session_ref.broadcast_cancelled_callback.clone();
+    let rust_callback = Box::new(move |path: &str| {
+        if let Ok(guard) = c_callback.read() {
+            if let Some(cb) = *guard {
+                let c_path = CString::new(path).unwrap_or_else(|_| CString::new("").unwrap());
+                cb(c_path.as_ptr());
+            }
+        }
+    });
+
+    // Set the callback in the session
+    session_ref.runtime.block_on(async {
+        session_ref
+            .session
+            .set_broadcast_cancelled_callback(rust_callback)
+            .await;
+    });
+
+    MoqResult::Success as c_int
+}
+
+/// Set connection closed callback
+///
+/// # Safety
+/// The caller must ensure that `session` is a valid pointer returned from
+/// `moq_create_publisher` or `moq_create_subscriber`.
+#[no_mangle]
+pub unsafe extern "C" fn moq_session_set_connection_closed_callback(
+    session: *mut CMoqSession,
+    callback: CConnectionClosedCallback,
+) -> c_int {
+    if session.is_null() {
+        return MoqResult::InvalidArgument as c_int;
+    }
+
+    let session_ref = unsafe { &*session };
+
+    // Store the C callback
+    if let Ok(mut cb) = session_ref.connection_closed_callback.write() {
+        *cb = Some(callback);
+    }
+
+    // Set up the Rust callback that will call the C callback
+    let c_callback = session_ref.connection_closed_callback.clone();
+    let session_handle = session as *mut std::ffi::c_void as usize; // Convert to usize for thread safety
+    let rust_callback = Box::new(move |reason: &str| {
+        if let Ok(guard) = c_callback.read() {
+            if let Some(cb) = *guard {
+                let c_reason = CString::new(reason).unwrap_or_else(|_| CString::new("").unwrap());
+                cb(session_handle as *mut std::ffi::c_void, c_reason.as_ptr());
+            }
+        }
+    });
+
+    // Set the callback in the session
+    session_ref.runtime.block_on(async {
+        session_ref
+            .session
+            .set_connection_closed_callback(rust_callback)
+            .await;
+    });
+
+    MoqResult::Success as c_int
+}
+
 /// # Safety
 /// The caller must ensure that `session` was previously allocated by
 /// `moq_create_publisher` or `moq_create_subscriber` and has not been freed before.
 #[no_mangle]
 pub unsafe extern "C" fn moq_session_free(session: *mut CMoqSession) {
     if !session.is_null() {
-        // Clear the callback before dropping the session
+        // Clear all callbacks before dropping the session
         let session_ref = unsafe { &*session };
         if let Ok(mut cb) = session_ref.data_callback.write() {
+            *cb = None;
+        }
+        if let Ok(mut cb) = session_ref.broadcast_announced_callback.write() {
+            *cb = None;
+        }
+        if let Ok(mut cb) = session_ref.broadcast_cancelled_callback.write() {
+            *cb = None;
+        }
+        if let Ok(mut cb) = session_ref.connection_closed_callback.write() {
             *cb = None;
         }
 
