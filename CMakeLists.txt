@@ -15,8 +15,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 # Find Rust and Cargo
-find_program(CARGO_EXECUTABLE cargo REQUIRED)
-find_program(RUSTC_EXECUTABLE rustc REQUIRED)
+# Add common Rust installation paths
+list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/.cargo/bin")
+find_program(CARGO_EXECUTABLE cargo REQUIRED HINTS "$ENV{HOME}/.cargo/bin")
+find_program(RUSTC_EXECUTABLE rustc REQUIRED HINTS "$ENV{HOME}/.cargo/bin")
 
 # Determine the Rust target directory and library name
 # The .cargo/config.toml redirects target-dir to build/rust-target
@@ -37,8 +39,9 @@ elseif(APPLE)
     set(RUST_LIB_NAME "libmoq_wrapper.dylib")
     set(RUST_LIB_PATH "${RUST_TARGET_DIR}/deps/${RUST_LIB_NAME}")
 else()
+    # On Linux, cdylib output goes directly to the target directory
     set(RUST_LIB_NAME "libmoq_wrapper.so")
-    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/deps/${RUST_LIB_NAME}")
+    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/${RUST_LIB_NAME}")
 endif()
 
 # Custom target to build the Rust library
@@ -119,14 +122,15 @@ endif()
 if(APPLE)
     set_target_properties(moq-cpp PROPERTIES
         INSTALL_RPATH "@loader_path"
-        BUILD_RPATH "${RUST_TARGET_DIR}"
+        BUILD_RPATH "${RUST_TARGET_DIR};${RUST_TARGET_DIR}/deps"
         INSTALL_RPATH_USE_LINK_PATH TRUE
     )
 elseif(UNIX)
     set_target_properties(moq-cpp PROPERTIES
         INSTALL_RPATH "$ORIGIN"
-        BUILD_RPATH "${RUST_TARGET_DIR}"
+        BUILD_RPATH "${RUST_TARGET_DIR};${RUST_TARGET_DIR}/deps"
         INSTALL_RPATH_USE_LINK_PATH TRUE
+        BUILD_WITH_INSTALL_RPATH FALSE
     )
 endif()
 
@@ -184,7 +188,27 @@ if(WIN32)
     ")
 else()
     # On Unix, install shared library to lib
-    install(FILES ${RUST_LIB_PATH} DESTINATION lib)
+    # Use install CODE to handle configuration-specific paths
+    install(CODE "
+        # Try both release and debug, preferring release
+        set(RUST_LIB_RELEASE \"${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/release/${RUST_LIB_NAME}\")
+        set(RUST_LIB_DEBUG \"${CMAKE_CURRENT_SOURCE_DIR}/build/rust-target/debug/${RUST_LIB_NAME}\")
+        
+        if(EXISTS \"\${RUST_LIB_RELEASE}\")
+            set(RUST_LIB_SRC \"\${RUST_LIB_RELEASE}\")
+        elseif(EXISTS \"\${RUST_LIB_DEBUG}\")
+            set(RUST_LIB_SRC \"\${RUST_LIB_DEBUG}\")
+        else()
+            set(RUST_LIB_SRC \"\")
+        endif()
+        
+        if(RUST_LIB_SRC)
+            file(INSTALL \"\${RUST_LIB_SRC}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\")
+            message(STATUS \"Installed: \${CMAKE_INSTALL_PREFIX}/lib/${RUST_LIB_NAME}\")
+        else()
+            message(WARNING \"Rust library not found in release or debug directories\")
+        endif()
+    ")
 endif()
 
 # Export package
