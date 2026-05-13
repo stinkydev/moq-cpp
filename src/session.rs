@@ -4,7 +4,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, RwLock};
-use tokio::time::Instant;
+use tokio::time::{timeout, Instant};
 use tracing::{debug, error, info, warn, Level};
 
 use moq_lite::{
@@ -474,10 +474,20 @@ impl MoqSession {
         debug!("Establishing connection to: {}", config.connection.url);
 
         // Establish WebTransport/QUIC connection
-        let connection = client
-            .connect(config.connection.url.clone())
-            .await
-            .context("Failed to connect to relay")?;
+        let connect_fut = client.connect(config.connection.url.clone());
+        let connection = if config.connection.connect_timeout.is_zero() {
+            connect_fut.await.context("Failed to connect to relay")?
+        } else {
+            timeout(config.connection.connect_timeout, connect_fut)
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Connection timed out after {:?}",
+                        config.connection.connect_timeout
+                    )
+                })?
+                .context("Failed to connect to relay")?
+        };
 
         // Set up origin for publish/subscribe operations
         let origin = Origin::produce();

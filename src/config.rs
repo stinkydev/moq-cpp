@@ -40,6 +40,9 @@ pub struct ConnectionConfig {
     /// Force IPv4-only connections (Windows compatibility)
     pub ipv4_only: bool,
 
+    /// Timeout for the initial connection attempt (0 = no timeout)
+    pub connect_timeout: Duration,
+
     /// Client configuration for the underlying moq-native client
     pub client_config: moq_native::ClientConfig,
 }
@@ -60,6 +63,7 @@ impl Default for ConnectionConfig {
             reconnect_delay: Duration::from_millis(500), // Faster initial reconnection
             max_reconnect_delay: Duration::from_secs(10), // Shorter max delay for better responsiveness
             ipv4_only: cfg!(windows),                     // Default to IPv4-only on Windows
+            connect_timeout: Duration::from_secs(10),
             client_config,
         }
     }
