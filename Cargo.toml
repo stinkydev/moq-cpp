@@ -1,9 +1,9 @@
 [package]
 name = "moq-wrapper"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 description = "A wrapper library for moq-native with session management and reconnection"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [lib]
 name = "moq_wrapper"

@@ -266,6 +266,10 @@ The Rust library automatically builds with FFI support when building the CMake p
 - C++17 compatible compiler
 - Rust toolchain (for building the underlying library)
 
+### Dependency Licensing
+- Direct dependency licensing details are documented in `THIRD_PARTY_LICENSES.md`.
+- Most dependencies are permissively licensed (MIT or MIT OR Apache-2.0).
+
 ### Platform Dependencies
 
 **macOS:**
@@ -426,4 +430,4 @@ if (session->WriteFrame("track", data.c_str(), data.size(), true)) {
 
 ## License
 
-This project is dual-licensed under MIT OR Apache-2.0.
+This project is licensed under the MIT License. See `LICENSE`.
