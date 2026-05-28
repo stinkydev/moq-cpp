@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(moq-cpp VERSION 0.0.11)
+project(moq-cpp VERSION 0.0.12)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -166,12 +166,12 @@ if(CARGO_ABOUT_EXECUTABLE)
     add_custom_command(
         OUTPUT "${THIRD_PARTY_NOTICES_GEN}"
         COMMAND "${CARGO_ABOUT_EXECUTABLE}" generate
-                "${CMAKE_CURRENT_SOURCE_DIR}/about.hbs"
-                -o "${THIRD_PARTY_NOTICES_GEN}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/about.hbs"
+        -o "${THIRD_PARTY_NOTICES_GEN}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/about.toml"
-                "${CMAKE_CURRENT_SOURCE_DIR}/about.hbs"
-                "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
+        "${CMAKE_CURRENT_SOURCE_DIR}/about.hbs"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
         COMMENT "Generating THIRD-PARTY-NOTICES.txt with cargo-about"
         VERBATIM
     )
