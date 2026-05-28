@@ -48,3 +48,9 @@ workarounds = [
     "ring",
     "rustls",
 ]
+
+# Exclude our own crate (moq-wrapper, publish = false). It is the project being
+# licensed (see LICENSE), not a third party, and excluding it keeps the notice
+# file stable across version bumps.
+[private]
+ignore = true

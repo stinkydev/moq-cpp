@@ -36,12 +36,13 @@ changes (e.g. after a `Cargo.lock` update or a dependency bump).
 
 `about.toml` resolves the dependency graph for the platforms we ship
 (Windows / Linux / macOS, x86_64 and aarch64) and lists only crates actually
-linked for those targets. Dev-dependencies are excluded. The bundled crates
-currently resolve to these licenses:
+linked for those targets. Dev-dependencies and the `moq-wrapper` crate itself
+(covered by `LICENSE`) are excluded. The bundled crates currently resolve to
+these licenses:
 
 | License | Crates |
 | --- | --- |
-| MIT | 199 |
+| MIT | 198 |
 | Unicode-3.0 | 19 |
 | ISC | 4 |
 | Apache-2.0 | 3 |
