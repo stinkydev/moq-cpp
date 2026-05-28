@@ -1,0 +1,50 @@
+# Configuration for cargo-about (https://github.com/EmbarkStudios/cargo-about).
+#
+# `moq-wrapper` is shipped as a compiled cdylib that statically links its entire
+# Rust dependency tree. This config drives generation of THIRD-PARTY-NOTICES.txt,
+# which reproduces the license text of every bundled crate so downstream
+# packagers can produce complete attribution.
+#
+# Regenerate with:
+#   cargo about generate about.hbs -o THIRD-PARTY-NOTICES.txt
+
+# Gather licenses for every target we ship for, so platform-specific crates
+# (Windows, macOS Security framework, Linux, etc.) are all covered by a single
+# notice file rather than one per platform.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+# Dev-dependencies (e.g. tokio-test) are not linked into the shipped artifact.
+ignore-dev-dependencies = true
+
+# Licenses we accept appearing in the dependency tree. Generation fails if a
+# crate's license is not on this list, which surfaces new or unexpected
+# licenses whenever the dependency tree changes on a version bump.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "OpenSSL",
+    "BSL-1.0",
+]
+
+# Built-in clarifications for crates whose license cannot be reliably detected
+# from their SPDX expression and bundled license files (custom/mixed licenses).
+workarounds = [
+    "ring",
+    "rustls",
+]

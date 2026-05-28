@@ -156,3 +156,42 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy -- -D clippy::correctness -D clippy::complexity -D clippy::perf -D clippy::not_unsafe_ptr_arg_deref -A clippy::missing_safety_doc
+
+  third-party-notices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ubuntu-cargo-about-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-cargo-about-
+
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.0
+
+      # Fails if any bundled crate's license is missing or not in the `accepted`
+      # list in about.toml, surfacing new/changed licenses on dependency bumps.
+      - name: Generate third-party notices
+        run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.generated.txt
+
+      # Keep the committed copy in sync so downstream packagers and the CMake
+      # fallback can rely on it without running cargo-about. Compare with CRLF
+      # stripped since some upstream license texts embed CRLF.
+      - name: Verify committed THIRD-PARTY-NOTICES.txt is up to date
+        run: |
+          if ! diff <(tr -d '\r' < THIRD-PARTY-NOTICES.txt) <(tr -d '\r' < THIRD-PARTY-NOTICES.generated.txt); then
+            echo "::error::THIRD-PARTY-NOTICES.txt is out of date. Regenerate with 'cargo about generate about.hbs -o THIRD-PARTY-NOTICES.txt' and commit the result."
+            exit 1
+          fi

@@ -149,6 +149,52 @@ target_compile_options(moq-cpp PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
+# ---------------------------------------------------------------------------
+# Third-party license notices
+#
+# The shipped library statically links its entire Rust dependency tree, so we
+# generate an aggregated THIRD-PARTY-NOTICES.txt with cargo-about and install it
+# alongside the binaries. A copy is committed at the repo root as both a
+# reviewable artifact and a fallback for environments without cargo-about.
+# ---------------------------------------------------------------------------
+set(THIRD_PARTY_NOTICES_SRC "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt")
+set(THIRD_PARTY_NOTICES_GEN "${CMAKE_CURRENT_BINARY_DIR}/THIRD-PARTY-NOTICES.txt")
+
+find_program(CARGO_ABOUT_EXECUTABLE cargo-about HINTS "$ENV{HOME}/.cargo/bin")
+
+if(CARGO_ABOUT_EXECUTABLE)
+    add_custom_command(
+        OUTPUT "${THIRD_PARTY_NOTICES_GEN}"
+        COMMAND "${CARGO_ABOUT_EXECUTABLE}" generate
+                "${CMAKE_CURRENT_SOURCE_DIR}/about.hbs"
+                -o "${THIRD_PARTY_NOTICES_GEN}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/about.toml"
+                "${CMAKE_CURRENT_SOURCE_DIR}/about.hbs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.lock"
+        COMMENT "Generating THIRD-PARTY-NOTICES.txt with cargo-about"
+        VERBATIM
+    )
+    add_custom_target(third_party_notices ALL DEPENDS "${THIRD_PARTY_NOTICES_GEN}")
+    add_dependencies(moq-cpp third_party_notices)
+    set(THIRD_PARTY_NOTICES_FILE "${THIRD_PARTY_NOTICES_GEN}")
+else()
+    message(WARNING
+        "cargo-about not found; THIRD-PARTY-NOTICES.txt will not be regenerated. "
+        "Install it with 'cargo install cargo-about --locked --features cli'. "
+        "Falling back to the committed copy at ${THIRD_PARTY_NOTICES_SRC}.")
+    set(THIRD_PARTY_NOTICES_FILE "${THIRD_PARTY_NOTICES_SRC}")
+endif()
+
+# Copy the notice file next to the built library so it is part of the raw
+# build output, mirroring the Rust library copy below.
+add_custom_command(TARGET moq-cpp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${THIRD_PARTY_NOTICES_FILE}"
+    "$<TARGET_FILE_DIR:moq-cpp>"
+    COMMENT "Copying THIRD-PARTY-NOTICES.txt to output directory"
+)
+
 # Install targets
 install(TARGETS moq-cpp
     EXPORT moq-cpp-targets
@@ -158,6 +204,13 @@ install(TARGETS moq-cpp
 )
 
 install(DIRECTORY cpp/include/ DESTINATION include)
+
+# Ship licensing artifacts so downstream packagers get complete attribution.
+install(FILES
+    "${THIRD_PARTY_NOTICES_FILE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    DESTINATION share/moq-cpp
+)
 
 # Install the Rust library alongside the C++ library
 if(WIN32)

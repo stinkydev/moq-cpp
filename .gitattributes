@@ -1,0 +1,9 @@
+# THIRD-PARTY-NOTICES.txt is generated verbatim from upstream crate license
+# files, some of which embed CRLF. Store it byte-for-byte (no EOL conversion)
+# so regeneration on any platform reproduces the committed file exactly.
+THIRD-PARTY-NOTICES.txt -text
+
+# Keep the cargo-about config/template LF on every platform so the generated
+# structural lines match regardless of where the file is produced.
+about.hbs  text eol=lf
+about.toml text eol=lf
