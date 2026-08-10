@@ -61,7 +61,9 @@ pub async fn create_publisher(
     let url = url::Url::parse(url)
         .map_err(|e| WrapperError::InvalidConfig(format!("Invalid URL: {}", e)))?;
 
+    let url_display = url.to_string();
     let config = SessionConfig::new(broadcast_name, url);
+    let connect_timeout = config.connection.connect_timeout;
     let session = MoqSession::publisher(
         config,
         broadcast_name.to_string(),
@@ -72,10 +74,43 @@ pub async fn create_publisher(
 
     session.start().await?;
 
-    // Wait for initial connection (track producers will be created automatically)
-    use tokio::time::{sleep, Duration};
-    while !session.is_connected().await {
-        sleep(Duration::from_millis(100)).await;
+    // Wait for the initial connection attempt to resolve (track producers are
+    // created automatically once connected). The connection task records its
+    // outcome in connection_attempts, so a failed attempt returns an error
+    // instead of polling forever against an unreachable relay.
+    use tokio::time::{sleep, timeout, Duration};
+    let wait_for_connection = async {
+        loop {
+            let info = session.connection_info().await;
+            if info.connected {
+                return Ok(());
+            }
+            if info.connection_attempts > 0 {
+                return Err(WrapperError::Session(format!(
+                    "Failed to establish initial connection to {}",
+                    url_display
+                )));
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    };
+
+    if connect_timeout.is_zero() {
+        wait_for_connection.await?;
+    } else {
+        // connect_timeout only bounds the QUIC dial, not the MoQ handshake
+        // after it, so cap the total wait as well.
+        timeout(
+            connect_timeout + Duration::from_secs(5),
+            wait_for_connection,
+        )
+        .await
+        .map_err(|_| {
+            WrapperError::Session(format!(
+                "Timed out establishing initial connection to {}",
+                url_display
+            ))
+        })??;
     }
 
     Ok(session)

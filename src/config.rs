@@ -63,7 +63,7 @@ impl Default for ConnectionConfig {
             reconnect_delay: Duration::from_millis(500), // Faster initial reconnection
             max_reconnect_delay: Duration::from_secs(10), // Shorter max delay for better responsiveness
             ipv4_only: cfg!(windows),                     // Default to IPv4-only on Windows
-            connect_timeout: Duration::from_secs(10),
+            connect_timeout: Duration::from_secs(5),
             client_config,
         }
     }

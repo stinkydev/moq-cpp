@@ -156,6 +156,9 @@ async fn run_subscriber(args: Args) -> Result<()> {
 
             move |track: String, data: Vec<u8>| {
                 info!("📥 Received frame on track {}: {} bytes", track, data.len());
+                if let Ok(text) = String::from_utf8(data) {
+                    state.lock().unwrap().process_frame(text);
+                }
             }
         })
         .await;
