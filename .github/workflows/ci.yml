@@ -14,6 +14,11 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    # Ninja everywhere: the VS generator breaks whenever a new runner image
+    # ships a Visual Studio newer than the cmake crate (aws-lc-sys) knows.
+    env:
+      CMAKE_GENERATOR: Ninja
+
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +46,12 @@ jobs:
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja
+
+      # Ninja needs cl.exe on PATH; sets up the vcvars environment for all
+      # later steps, including aws-lc-sys's internal cmake invocation.
+      - name: Setup MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
