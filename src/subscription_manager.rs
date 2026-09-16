@@ -37,6 +37,16 @@ pub struct BroadcastSubscriptionManager {
     catalog_subscribed: Arc<RwLock<bool>>,
 }
 
+struct CatalogSubscriptionContext {
+    catalog_type: CatalogType,
+    subscribe_all_catalog_tracks: bool,
+    current_catalog: Arc<RwLock<Option<Catalog>>>,
+    catalog_update_tx: broadcast::Sender<String>,
+    active_tracks: Arc<RwLock<HashSet<String>>>,
+    track_data_callback: Arc<RwLock<Option<TrackDataCallback>>>,
+    is_active: Arc<RwLock<bool>>,
+}
+
 impl BroadcastSubscriptionManager {
     /// Create a new subscription manager for a specific broadcast
     pub async fn new(
@@ -109,7 +119,6 @@ impl BroadcastSubscriptionManager {
         let catalog_type = self.catalog_type.clone();
         let requested_tracks = self.requested_tracks.clone();
         let subscribe_all_catalog_tracks = self.subscribe_all_catalog_tracks;
-        let catalog_consumer = self.catalog_consumer.clone();
         let active_tracks = self.active_tracks.clone();
         let current_catalog = self.current_catalog.clone();
         let catalog_update_tx = self.catalog_update_tx.clone();
@@ -130,19 +139,17 @@ impl BroadcastSubscriptionManager {
                 if !*already_subscribed {
                     *already_subscribed = true;
                     info!("[BroadcastSubscriptionManager] First-time catalog subscription for broadcast: {}", broadcast_name);
-                    Self::manage_catalog_subscription(
-                        &session,
-                        &broadcast_name,
-                        catalog_type.clone(),
+                    let catalog_context = CatalogSubscriptionContext {
+                        catalog_type: catalog_type.clone(),
                         subscribe_all_catalog_tracks,
-                        catalog_consumer.clone(),
-                        current_catalog.clone(),
-                        catalog_update_tx.clone(),
-                        active_tracks.clone(),
-                        track_data_callback.clone(),
-                        is_active.clone(),
-                    )
-                    .await;
+                        current_catalog: current_catalog.clone(),
+                        catalog_update_tx: catalog_update_tx.clone(),
+                        active_tracks: active_tracks.clone(),
+                        track_data_callback: track_data_callback.clone(),
+                        is_active: is_active.clone(),
+                    };
+                    Self::manage_catalog_subscription(&session, &broadcast_name, catalog_context)
+                        .await;
                 } else {
                     info!("[BroadcastSubscriptionManager] Catalog already subscribed for broadcast: {}", broadcast_name);
                 }
@@ -165,14 +172,7 @@ impl BroadcastSubscriptionManager {
     async fn manage_catalog_subscription(
         session: &MoqSession,
         broadcast_name: &str,
-        catalog_type: CatalogType,
-        subscribe_all_catalog_tracks: bool,
-        _catalog_consumer: Arc<RwLock<Option<TrackConsumer>>>,
-        current_catalog: Arc<RwLock<Option<Catalog>>>,
-        catalog_update_tx: broadcast::Sender<String>,
-        active_tracks: Arc<RwLock<HashSet<String>>>,
-        track_data_callback: Arc<RwLock<Option<TrackDataCallback>>>,
-        is_active: Arc<RwLock<bool>>,
+        context: CatalogSubscriptionContext,
     ) {
         info!(
             "[BroadcastSubscriptionManager] Subscribing to catalog for broadcast: {}",
@@ -187,6 +187,16 @@ impl BroadcastSubscriptionManager {
             Ok(mut track_consumer) => {
                 let session = session.clone();
                 let broadcast_name = broadcast_name.to_string();
+                let CatalogSubscriptionContext {
+                    catalog_type,
+                    subscribe_all_catalog_tracks,
+                    current_catalog,
+                    catalog_update_tx,
+                    active_tracks,
+                    track_data_callback,
+                    is_active,
+                } = context;
+
                 // Monitor catalog for updates
                 tokio::spawn(async move {
                     while *is_active.read().await {

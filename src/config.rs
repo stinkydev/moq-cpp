@@ -49,13 +49,15 @@ pub struct ConnectionConfig {
 
 impl Default for ConnectionConfig {
     fn default() -> Self {
-        let mut client_config = moq_native::ClientConfig::default();
-
-        // Force IPv4 binding on Windows to avoid IPv6 issues
         #[cfg(windows)]
-        {
+        let client_config = {
+            let mut client_config = moq_native::ClientConfig::default();
             client_config.bind = "0.0.0.0:0".parse().expect("Valid IPv4 bind address");
-        }
+            client_config
+        };
+
+        #[cfg(not(windows))]
+        let client_config = moq_native::ClientConfig::default();
 
         Self {
             url: url::Url::parse("https://relay.moq.dev/anon").unwrap(),
