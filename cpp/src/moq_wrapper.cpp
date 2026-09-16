@@ -24,7 +24,11 @@ extern "C"
   void *moq_create_publisher(const char *url, const char *broadcast_name,
                              const TrackDefinitionFFI *tracks, size_t track_count, int catalog_type);
   void *moq_create_subscriber(const char *url, const char *broadcast_name,
-                              const TrackDefinitionFFI *tracks, size_t track_count, int catalog_type);
+                              const TrackDefinitionFFI *tracks, size_t track_count, int catalog_type,
+                              int subscribe_all_catalog_tracks);
+  void *moq_create_room_subscriber(const char *url, const char *room_prefix,
+                                   const TrackDefinitionFFI *tracks, size_t track_count, int catalog_type,
+                                   int subscribe_all_catalog_tracks);
   int moq_session_set_data_callback(void *session,
                                     void (*callback)(void *, const char *, const uint8_t *, size_t));
   int moq_write_single_frame(void *session, const char *track_name,
@@ -258,7 +262,8 @@ namespace moq
 
   std::unique_ptr<Session> Session::CreateSubscriber(
       const std::string &url, const std::string &broadcast_name,
-      const std::vector<TrackDefinition> &tracks, CatalogType catalog_type)
+      const std::vector<TrackDefinition> &tracks, CatalogType catalog_type,
+      bool subscribe_all_catalog_tracks)
   {
     // Prepare FFI track definitions
     // Keep strings alive by storing them separately
@@ -278,7 +283,42 @@ namespace moq
     void *handle = moq_create_subscriber(
         url.c_str(), broadcast_name.c_str(),
         ffi_tracks.empty() ? nullptr : ffi_tracks.data(),
-        ffi_tracks.size(), static_cast<int>(catalog_type));
+        ffi_tracks.size(), static_cast<int>(catalog_type),
+        subscribe_all_catalog_tracks ? 1 : 0);
+
+    if (!handle)
+    {
+      return nullptr;
+    }
+
+    return std::unique_ptr<Session>(new Session(handle));
+  }
+
+  std::unique_ptr<Session> Session::CreateRoomSubscriber(
+      const std::string &url, const std::string &room_prefix,
+      const std::vector<TrackDefinition> &tracks, CatalogType catalog_type,
+      bool subscribe_all_catalog_tracks)
+  {
+    // Prepare FFI track definitions
+    // Keep strings alive by storing them separately
+    std::vector<std::string> track_names;
+    std::vector<TrackDefinitionFFI> ffi_tracks;
+    track_names.reserve(tracks.size());
+    ffi_tracks.reserve(tracks.size());
+
+    for (const auto &track : tracks)
+    {
+      track_names.push_back(track.name());
+      ffi_tracks.push_back({track_names.back().c_str(),
+                            track.priority(),
+                            static_cast<uint8_t>(track.track_type())});
+    }
+
+    void *handle = moq_create_room_subscriber(
+        url.c_str(), room_prefix.c_str(),
+        ffi_tracks.empty() ? nullptr : ffi_tracks.data(),
+        ffi_tracks.size(), static_cast<int>(catalog_type),
+        subscribe_all_catalog_tracks ? 1 : 0);
 
     if (!handle)
     {

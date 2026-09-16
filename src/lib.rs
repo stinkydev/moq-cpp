@@ -9,14 +9,18 @@ pub use catalog::{Catalog, CatalogType, HangCatalog, SesameCatalog, TrackDefinit
 pub use config::{ConnectionConfig, SessionConfig, WrapperError};
 pub use session::{
     ConnectionInfo, DataCallback, MoqSession, SessionEvent, SessionLogCallback, SessionType,
+    SubscriptionMode,
 };
 pub use subscription_manager::BroadcastSubscriptionManager;
 pub use track::{StreamPublisher, TrackManager};
 
-// Re-export commonly used types from moq-lite for convenience
+// Re-export commonly used upstream MoQ types for convenience.
 pub use bytes::Bytes;
-pub use moq_lite::{
-    Broadcast, BroadcastConsumer, BroadcastProducer, Track, TrackConsumer, TrackProducer,
+pub use moq_native::moq_net::broadcast::{
+    Consumer as BroadcastConsumer, Producer as BroadcastProducer,
+};
+pub use moq_native::moq_net::track::{
+    Info as Track, Producer as TrackProducer, Subscriber as TrackConsumer,
 };
 
 // Re-export tracing types for logging
@@ -157,19 +161,71 @@ pub async fn create_subscriber(
     tracks: Vec<TrackDefinition>,
     catalog_type: CatalogType,
 ) -> Result<MoqSession, WrapperError> {
+    create_subscriber_with_options(url, broadcast_name, tracks, catalog_type, false).await
+}
+
+/// Create a quick subscriber session with subscription options.
+pub async fn create_subscriber_with_options(
+    url: &str,
+    broadcast_name: &str,
+    tracks: Vec<TrackDefinition>,
+    catalog_type: CatalogType,
+    subscribe_all_catalog_tracks: bool,
+) -> Result<MoqSession, WrapperError> {
     let url = url::Url::parse(url)
         .map_err(|e| WrapperError::InvalidConfig(format!("Invalid URL: {}", e)))?;
 
     let config = SessionConfig::new(broadcast_name, url);
-    let session = MoqSession::subscriber(
+    let session = MoqSession::subscriber_with_options(
         config,
         broadcast_name.to_string(),
         catalog_type,
         tracks.clone(),
+        subscribe_all_catalog_tracks,
     )
     .await?;
 
     // Start the session to establish connection
+    session.start().await?;
+
+    Ok(session)
+}
+
+/// Create a subscriber session that treats `room_prefix` as an announcement prefix.
+///
+/// Every announced broadcast under the prefix gets its own track subscriptions.
+/// Data callbacks receive `broadcast_path/track_name` so callers can distinguish
+/// sources inside the room.
+pub async fn create_room_subscriber(
+    url: &str,
+    room_prefix: &str,
+    tracks: Vec<TrackDefinition>,
+    catalog_type: CatalogType,
+) -> Result<MoqSession, WrapperError> {
+    create_room_subscriber_with_options(url, room_prefix, tracks, catalog_type, false).await
+}
+
+/// Create a room subscriber session with subscription options.
+pub async fn create_room_subscriber_with_options(
+    url: &str,
+    room_prefix: &str,
+    tracks: Vec<TrackDefinition>,
+    catalog_type: CatalogType,
+    subscribe_all_catalog_tracks: bool,
+) -> Result<MoqSession, WrapperError> {
+    let url = url::Url::parse(url)
+        .map_err(|e| WrapperError::InvalidConfig(format!("Invalid URL: {}", e)))?;
+
+    let config = SessionConfig::new(room_prefix, url);
+    let session = MoqSession::room_subscriber_with_options(
+        config,
+        room_prefix.to_string(),
+        catalog_type,
+        tracks.clone(),
+        subscribe_all_catalog_tracks,
+    )
+    .await?;
+
     session.start().await?;
 
     Ok(session)

@@ -51,12 +51,10 @@ impl TrackDefinition {
     }
 }
 
-impl From<TrackDefinition> for moq_lite::Track {
+impl From<TrackDefinition> for moq_native::moq_net::track::Info {
     fn from(def: TrackDefinition) -> Self {
-        moq_lite::Track {
-            name: def.name,
-            priority: def.priority.try_into().unwrap_or(0),
-        }
+        moq_native::moq_net::track::Info::default()
+            .with_priority(def.priority.try_into().unwrap_or(u8::MAX))
     }
 }
 
@@ -109,6 +107,19 @@ impl SesameCatalog {
 
     pub fn find_track(&self, name: &str) -> Option<&SesameCatalogTrack> {
         self.tracks.iter().find(|t| t.track_name == name)
+    }
+
+    pub fn track_definitions(&self) -> Vec<TrackDefinition> {
+        self.tracks
+            .iter()
+            .map(|track| {
+                TrackDefinition::new(
+                    track.track_name.clone(),
+                    track.priority,
+                    track.track_type.clone(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -410,6 +421,51 @@ impl HangCatalog {
         false
     }
 
+    pub fn track_definitions(&self) -> Vec<TrackDefinition> {
+        let mut tracks = Vec::new();
+
+        if let Some(video) = &self.video {
+            tracks.extend(
+                video
+                    .renditions
+                    .keys()
+                    .map(|name| TrackDefinition::video(name.clone(), u32::from(video.priority))),
+            );
+        }
+
+        if let Some(audio) = &self.audio {
+            tracks.extend(
+                audio
+                    .renditions
+                    .keys()
+                    .map(|name| TrackDefinition::audio(name.clone(), u32::from(audio.priority))),
+            );
+        }
+
+        if let Some(location) = &self.location {
+            tracks.push(TrackDefinition::data(
+                location.track.clone(),
+                u32::from(location.priority),
+            ));
+        }
+
+        if let Some(chat) = &self.chat {
+            tracks.push(TrackDefinition::data(
+                chat.track.clone(),
+                u32::from(chat.priority),
+            ));
+        }
+
+        if let Some(preview) = &self.preview {
+            tracks.push(TrackDefinition::data(
+                preview.name.clone(),
+                u32::from(preview.priority),
+            ));
+        }
+
+        tracks
+    }
+
     /// Serialize to JSON string
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
@@ -473,6 +529,28 @@ impl Catalog {
         }
     }
 
+    pub fn track_definitions(&self) -> Vec<TrackDefinition> {
+        match self {
+            Catalog::Sesame(catalog) => catalog.track_definitions(),
+            Catalog::Hang(catalog) => catalog.track_definitions(),
+        }
+    }
+
+    pub fn parse(
+        catalog_type: &CatalogType,
+        json: &str,
+    ) -> Result<Option<Self>, serde_json::Error> {
+        match catalog_type {
+            CatalogType::None => Ok(None),
+            CatalogType::Sesame => {
+                Self::parse_sesame(json).map(|catalog| Some(Catalog::Sesame(catalog)))
+            }
+            CatalogType::Hang => {
+                Self::parse_hang(json).map(|catalog| Some(Catalog::Hang(Box::new(catalog))))
+            }
+        }
+    }
+
     pub fn parse_sesame(json: &str) -> Result<SesameCatalog, serde_json::Error> {
         SesameCatalog::from_json(json)
     }
@@ -511,6 +589,11 @@ mod tests {
 
         assert!(catalog.find_track("video1").is_some());
         assert!(catalog.find_track("nonexistent").is_none());
+
+        let definitions = catalog.track_definitions();
+        assert_eq!(definitions.len(), 3);
+        assert_eq!(definitions[0].name, "video1");
+        assert_eq!(definitions[0].track_type, TrackType::Video);
     }
 
     #[test]
@@ -548,6 +631,14 @@ mod tests {
         assert!(catalog.find_track("video1"));
         assert!(catalog.find_track("audio1"));
         assert!(!catalog.find_track("nonexistent"));
+
+        let definitions = catalog.track_definitions();
+        assert!(definitions.iter().any(|track| {
+            track.name == "video1" && track.track_type == TrackType::Video && track.priority == 1
+        }));
+        assert!(definitions.iter().any(|track| {
+            track.name == "audio1" && track.track_type == TrackType::Audio && track.priority == 2
+        }));
 
         // Verify structure
         assert!(catalog.video.is_some());
@@ -611,5 +702,37 @@ mod tests {
         assert!(json.contains("\"renditions\""));
         assert!(json.contains("\"codec\""));
         assert!(json.contains("\"priority\""));
+    }
+
+    #[test]
+    fn test_hang_catalog_track_definitions_include_data_tracks() {
+        let mut catalog = HangCatalog::new();
+        catalog.location = Some(HangLocation {
+            track: "location/data".to_string(),
+            priority: 3,
+        });
+        catalog.chat = Some(HangChat {
+            track: "chat/data".to_string(),
+            priority: 4,
+        });
+        catalog.preview = Some(HangTrack {
+            name: "preview/data".to_string(),
+            priority: 5,
+        });
+
+        let definitions = catalog.track_definitions();
+        assert!(definitions.iter().any(|track| {
+            track.name == "location/data"
+                && track.track_type == TrackType::Data
+                && track.priority == 3
+        }));
+        assert!(definitions.iter().any(|track| {
+            track.name == "chat/data" && track.track_type == TrackType::Data && track.priority == 4
+        }));
+        assert!(definitions.iter().any(|track| {
+            track.name == "preview/data"
+                && track.track_type == TrackType::Data
+                && track.priority == 5
+        }));
     }
 }

@@ -1,9 +1,12 @@
 #include "moq_wrapper.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <iostream>
-#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -11,270 +14,174 @@
 namespace
 {
 
-  void LogCallback(const std::string &target, moq::LogLevel level,
-                   const std::string &message)
-  {
-    const char *level_str = "UNKNOWN";
-    switch (level)
-    {
-    case moq::LogLevel::kTrace:
-      level_str = "TRACE";
-      break;
-    case moq::LogLevel::kDebug:
-      level_str = "DEBUG";
-      break;
-    case moq::LogLevel::kInfo:
-      level_str = "INFO";
-      break;
-    case moq::LogLevel::kWarn:
-      level_str = "WARN";
-      break;
-    case moq::LogLevel::kError:
-      level_str = "ERROR";
-      break;
-    }
-    std::cout << "[" << level_str << "] " << target << ": " << message << std::endl;
-  }
+constexpr const char *kDefaultRelay = "https://r2.moq.sesame-streams.com:4433";
+constexpr const char *kDefaultBroadcast = "clock-cpp";
+constexpr const char *kTrackName = "clock";
 
-  // New callback functions for broadcast events
-  void BroadcastAnnouncedCallback(const std::string &path)
-  {
-    std::cout << "🟢 BROADCAST ANNOUNCED: " << path << std::endl;
-  }
-
-  void BroadcastCancelledCallback(const std::string &path)
-  {
-    std::cout << "🔴 BROADCAST CANCELLED: " << path << std::endl;
-  }
-
-  void ConnectionClosedCallback(const std::string &reason)
-  {
-    std::cout << "❌ CONNECTION CLOSED: " << reason << std::endl;
-  }
-
-  std::string GetCurrentTime()
-  {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                  now.time_since_epoch()) %
-              1000;
-
-    std::tm tm = *std::localtime(&time_t);
-    char buffer[100];
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm);
-
-    return std::string(buffer) + "." + std::to_string(ms.count());
-  }
-
-} // namespace
-
-// Session management thread function
-void SessionManagerThread(const std::string &url, const std::string &broadcast,
-                          std::shared_ptr<moq::Session> &session, std::atomic<bool> &session_ready,
-                          std::atomic<bool> &should_stop)
+std::string NowString()
 {
-  // Define the clock track
+  const auto now = std::chrono::system_clock::now();
+  const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now.time_since_epoch()) %
+                      1000;
+  const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+
+  std::tm local_time{};
+#ifdef _WIN32
+  localtime_s(&local_time, &now_time);
+#else
+  localtime_r(&now_time, &local_time);
+#endif
+
+  char date_time[32];
+  std::strftime(date_time, sizeof(date_time), "%Y-%m-%dT%H:%M:%S", &local_time);
+
+  char result[64];
+  std::snprintf(result, sizeof(result), "%s.%03lld", date_time,
+                static_cast<long long>(millis.count()));
+  return result;
+}
+
+size_t ParseSize(const char *value, size_t fallback)
+{
+  if (!value)
+  {
+    return fallback;
+  }
+
+  char *end = nullptr;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (end == value || parsed == 0)
+  {
+    return fallback;
+  }
+
+  return static_cast<size_t>(parsed);
+}
+
+std::string BroadcastForIndex(const std::string &base, size_t index,
+                              size_t publisher_count)
+{
+  if (publisher_count == 1)
+  {
+    return base;
+  }
+
+  std::string prefix = base;
+  while (!prefix.empty() && prefix.back() == '/')
+  {
+    prefix.pop_back();
+  }
+
+  return prefix + "/publisher-" + std::to_string(index + 1);
+}
+
+bool WaitForConnection(const moq::Session &session, std::atomic<bool> &should_stop)
+{
+  const auto start = std::chrono::steady_clock::now();
+  while (!should_stop && !session.IsConnected())
+  {
+    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(10))
+    {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  return !should_stop && session.IsConnected();
+}
+
+void PublisherThread(const std::string &url, const std::string &broadcast,
+                     size_t interval_ms, std::atomic<bool> &should_stop)
+{
   std::vector<moq::TrackDefinition> tracks;
-  tracks.emplace_back("clock", 0, moq::TrackType::kData);
+  tracks.emplace_back(kTrackName, 0, moq::TrackType::kData);
 
-  std::cout << "[SESSION] Creating publisher session..." << std::endl;
-  session = moq::Session::CreatePublisher(url, broadcast, tracks, moq::CatalogType::kSesame);
-
+  auto session =
+      moq::Session::CreatePublisher(url, broadcast, tracks, moq::CatalogType::kNone);
   if (!session)
   {
-    std::cerr << "[SESSION] Failed to create publisher session" << std::endl;
+    std::cerr << "[" << broadcast << "] failed to create publisher session" << std::endl;
     should_stop = true;
     return;
   }
 
-  // Set session-specific log callback
-  session->SetLogCallback(LogCallback);
-
-  // Set up the new broadcast event callbacks
-  std::cout << "[SESSION] Setting up broadcast event callbacks..." << std::endl;
-  if (!session->SetBroadcastAnnouncedCallback(BroadcastAnnouncedCallback))
-  {
-    std::cerr << "[SESSION] Failed to set broadcast announced callback" << std::endl;
-  }
-
-  if (!session->SetBroadcastCancelledCallback(BroadcastCancelledCallback))
-  {
-    std::cerr << "[SESSION] Failed to set broadcast cancelled callback" << std::endl;
-  }
-
-  if (!session->SetConnectionClosedCallback(ConnectionClosedCallback))
-  {
-    std::cerr << "[SESSION] Failed to set connection closed callback" << std::endl;
-  }
-
-  std::cout << "[SESSION] All callbacks configured successfully" << std::endl;
-
-  // Wait for connection
-  std::cout << "[SESSION] Connecting..." << std::endl;
-  while (!session->IsConnected() && !should_stop)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-
-  if (!should_stop)
-  {
-    std::cout << "[SESSION] Connected!" << std::endl;
-    session_ready = true;
-  }
-
-  // Keep session alive and monitor connection
-  while (!should_stop)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    if (!session->IsConnected())
-    {
-      if (session_ready)
+  session->SetConnectionClosedCallback(
+      [broadcast](const std::string &reason)
       {
-        std::cout << "[SESSION] Connection lost! Waiting for reconnection..." << std::endl;
-        session_ready = false;
-      }
-      // Don't break - let the session attempt to reconnect
-      // The Rust layer handles automatic reconnection
-    }
-    else
-    {
-      if (!session_ready)
-      {
-        std::cout << "[SESSION] Reconnected!" << std::endl;
-        session_ready = true;
-      }
-    }
-  }
+        std::cerr << "[" << broadcast << "] connection closed: " << reason << std::endl;
+      });
 
-  std::cout << "[SESSION] Shutting down session..." << std::endl;
-  if (session)
+  if (!WaitForConnection(*session, should_stop))
   {
+    std::cerr << "[" << broadcast << "] timed out waiting for connection" << std::endl;
     session->Close();
-  }
-}
-
-// Data publishing thread function
-void DataPublishThread(std::shared_ptr<moq::Session> &session,
-                       std::atomic<bool> &session_ready, std::atomic<bool> &should_stop)
-{
-  std::cout << "[DATA] Waiting for session to be ready..." << std::endl;
-
-  // Wait for session to be ready
-  while (!session_ready && !should_stop)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-
-  if (should_stop)
-  {
     return;
   }
 
-  std::cout << "[DATA] Session ready, waiting for track producers to be created..." << std::endl;
+  std::cout << "[" << broadcast << "] connected and publishing track '"
+            << kTrackName << "'" << std::endl;
 
-  // Give additional time for track producers to be created asynchronously
-  // This prevents the "Track producer not available" race condition
-  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-  std::cout << "[DATA] Starting data publishing..." << std::endl;
-  std::cout << "[DATA] Publishing clock data (creating one group per minute with frames every second)" << std::endl;
-
-  int frame_count = 0;
-  auto last_minute = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) / 60;
-
-  while (!should_stop && session_ready)
+  const auto interval = std::chrono::milliseconds(std::max<size_t>(interval_ms, 1));
+  while (!should_stop)
   {
-    std::string current_time = GetCurrentTime();
-    auto now = std::chrono::system_clock::now();
-    auto current_minute = std::chrono::system_clock::to_time_t(now) / 60;
+    const std::string payload = broadcast + " " + NowString();
+    const auto *data = reinterpret_cast<const uint8_t *>(payload.data());
 
-    bool new_group = (current_minute != last_minute);
-    if (new_group)
+    if (!session->WriteSingleFrame(kTrackName, data, payload.size()))
     {
-      std::cout << "[DATA] === NEW MINUTE: Starting new group ===" << std::endl;
-      last_minute = current_minute;
-      frame_count = 0; // Reset frame count for new group
+      std::cerr << "[" << broadcast << "] failed to publish frame" << std::endl;
+    }
+    else
+    {
+      std::cout << "[" << broadcast << "] " << payload << std::endl;
     }
 
-    std::cout << "[DATA] Publishing: " << current_time << " (group minute " << current_minute % 100
-              << ", frame " << frame_count++ << ")" << std::endl;
-
-    // Write frame, starting new group if it's a new minute
-    if (session && session_ready)
-    {
-      if (!session->WriteFrame("clock",
-                               reinterpret_cast<const uint8_t *>(current_time.c_str()),
-                               current_time.length(),
-                               new_group))
-      {
-        std::cerr << "[DATA] Failed to write frame (connection may be down)" << std::endl;
-      }
-    }
-    else if (session && !session_ready)
-    {
-      std::cout << "[DATA] Waiting for connection to be ready..." << std::endl;
-    }
-
-    // std::this_thread::sleep_for(std::chrono::seconds(1));
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(interval);
   }
 
-  std::cout << "[DATA] Data publishing thread stopping..." << std::endl;
+  session->Close();
 }
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
-  // Set up global logging for library diagnostics (optional)
-  moq::SetLogLevel(moq::LogLevel::kDebug);
+  moq::SetLogLevel(moq::LogLevel::kInfo);
 
-  // Parse command line arguments
-  std::string url = "https://r1.moq.sesame-streams.com:4433";
-  std::string broadcast = "clock-cpp";
+  const std::string url = argc > 1 ? argv[1] : kDefaultRelay;
+  const std::string broadcast = argc > 2 ? argv[2] : kDefaultBroadcast;
+  const size_t publisher_count = argc > 3 ? ParseSize(argv[3], 1) : 1;
+  const size_t interval_ms = argc > 4 ? ParseSize(argv[4], 1000) : 1000;
 
-  if (argc > 1)
-  {
-    url = argv[1];
-  }
-  if (argc > 2)
-  {
-    broadcast = argv[2];
-  }
+  std::cout << "MoQ C++ clock publisher" << std::endl;
+  std::cout << "Relay: " << url << std::endl;
+  std::cout << "Broadcast base: " << broadcast << std::endl;
+  std::cout << "Publishers: " << publisher_count << std::endl;
+  std::cout << "Interval: " << interval_ms << " ms" << std::endl;
 
-  std::cout << "MOQ Clock Publisher (C++) - Multi-threaded Version" << std::endl;
-  std::cout << "Connecting to: " << url << std::endl;
-  std::cout << "Broadcasting: " << broadcast << std::endl;
-
-  // Shared state between threads
-  std::shared_ptr<moq::Session> session;
-  std::atomic<bool> session_ready{false};
   std::atomic<bool> should_stop{false};
+  std::vector<std::thread> threads;
+  threads.reserve(publisher_count);
 
-  // Start session management thread
-  std::thread session_thread(SessionManagerThread, std::ref(url), std::ref(broadcast),
-                             std::ref(session), std::ref(session_ready), std::ref(should_stop));
+  for (size_t i = 0; i < publisher_count; ++i)
+  {
+    threads.emplace_back(PublisherThread, url,
+                         BroadcastForIndex(broadcast, i, publisher_count),
+                         interval_ms, std::ref(should_stop));
+  }
 
-  // Start data publishing thread
-  std::thread data_thread(DataPublishThread, std::ref(session),
-                          std::ref(session_ready), std::ref(should_stop));
-
-  std::cout << "Press Enter to stop..." << std::endl;
+  std::cout << "Press Enter to stop." << std::endl;
   std::cin.get();
-
-  // Signal threads to stop
   should_stop = true;
 
-  // Wait for threads to complete
-  if (session_thread.joinable())
+  for (auto &thread : threads)
   {
-    session_thread.join();
-  }
-  if (data_thread.joinable())
-  {
-    data_thread.join();
+    if (thread.joinable())
+    {
+      thread.join();
+    }
   }
 
-  std::cout << "Application shutdown complete." << std::endl;
   return 0;
 }

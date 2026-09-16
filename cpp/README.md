@@ -41,12 +41,7 @@ cmake --install . --prefix /usr/local
 ```cpp
 #include "moq_wrapper.h"
 
-// Initialize the library with logging
-moq::Init(moq::LogLevel::kInfo, [](const std::string& target, 
-                                   moq::LogLevel level, 
-                                   const std::string& message) {
-    std::cout << "[" << level << "] " << target << ": " << message << std::endl;
-});
+moq::SetLogLevel(moq::LogLevel::kInfo);
 ```
 
 ### Creating a Publisher
@@ -87,7 +82,8 @@ auto session = moq::Session::CreateSubscriber(
     "https://relay.quic.video:4443", 
     "my-broadcast", 
     tracks,
-    moq::CatalogType::kHang
+    moq::CatalogType::kHang,
+    false
 );
 
 // Set data callback
@@ -101,6 +97,43 @@ session->SetDataCallback([](const std::string& track,
 while (!session->IsConnected()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
+```
+
+To subscribe to every track listed in `catalog.json`, pass an empty explicit
+track list and set the last argument to `true`:
+
+```cpp
+std::vector<moq::TrackDefinition> tracks;
+
+auto session = moq::Session::CreateSubscriber(
+    "https://relay.quic.video:4443",
+    "my-broadcast",
+    tracks,
+    moq::CatalogType::kHang,
+    true
+);
+```
+
+### Creating a Room Subscriber
+
+```cpp
+std::vector<moq::TrackDefinition> tracks;
+tracks.emplace_back("clock", 0, moq::TrackType::kData);
+
+auto session = moq::Session::CreateRoomSubscriber(
+    "https://r2.moq.sesame-streams.com:4433",
+    "my-room",
+    tracks,
+    moq::CatalogType::kNone,
+    false
+);
+
+session->SetDataCallback([](const std::string& track,
+                            const uint8_t* data,
+                            size_t size) {
+    // In room mode, track is "broadcast_path/track_name".
+    std::cout << "Received " << size << " bytes on " << track << std::endl;
+});
 ```
 
 ## Examples
@@ -125,23 +158,24 @@ See `examples/README.md` for detailed instructions.
 ### Clock Publisher
 
 ```bash
-./clock_publisher_cpp [url] [broadcast_name]
+./clock_publisher_example [url] [broadcast_name] [publisher_count] [interval_ms]
 ```
 
 Example:
 ```bash
-./clock_publisher_cpp https://relay.quic.video:4443 my-clock
+./clock_publisher_example https://r2.moq.sesame-streams.com:4433 my-room 3 1000
 ```
 
 ### Clock Subscriber
 
 ```bash
-./clock_subscriber_cpp [url] [broadcast_name]
+./clock_subscriber_example [url] [broadcast_or_room_prefix] [exact|room] [track] [none|sesame|hang] [all_catalog_tracks]
 ```
 
 Example:
 ```bash
-./clock_subscriber_cpp https://relay.quic.video:4443 my-clock
+./clock_subscriber_example https://r2.moq.sesame-streams.com:4433 my-room room
+./clock_subscriber_example https://r2.moq.sesame-streams.com:4433 my-room room clock sesame true
 ```
 
 ## Code Style
@@ -176,8 +210,8 @@ Main session class for MOQ operations. Use static factory methods to create inst
 
 ### Functions
 
-#### `moq::Init(LogLevel, LogCallback)`
-Initialize the MOQ library with logging configuration.
+#### `moq::SetLogLevel(LogLevel)`
+Initialize global library logging.
 
 ## Threading
 

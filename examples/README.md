@@ -1,56 +1,156 @@
-# MOQ C++ Examples
+# MoQ Examples
 
-This directory contains example applications demonstrating how to use the MOQ C++ library.
+This directory contains Rust and C++ examples for the current wrapper API.
 
-## Prerequisites
+The examples default to:
 
-1. Install the MOQ C++ library first:
-   ```bash
-   # From the project root
-   cmake -B build -DCMAKE_BUILD_TYPE=Release
-   cmake --build build
-   cmake --install build --prefix /usr/local  # or your preferred prefix
-   ```
+```text
+https://r2.moq.sesame-streams.com:4433
+```
 
-2. Make sure you have CMake 3.16+ and a C++17 compatible compiler.
+## Rust Wrapper Clock
 
-## Building the Examples
+Run one publisher on a single broadcast:
 
 ```bash
-cd examples
+cargo run --example clock_example -- --broadcast clock-rust publish
+```
+
+Run three publishers under one room prefix:
+
+```bash
+cargo run --example clock_example -- --broadcast clock-room publish --publishers 3
+```
+
+Subscribe to one exact broadcast:
+
+```bash
+cargo run --example clock_example -- --broadcast clock-rust subscribe
+```
+
+Subscribe using every track listed in the publisher's catalog:
+
+```bash
+cargo run --example clock_example -- --broadcast clock-rust --catalog sesame subscribe --all-catalog-tracks
+```
+
+Subscribe to every announced broadcast under a room prefix:
+
+```bash
+cargo run --example clock_example -- --broadcast clock-room subscribe --room
+```
+
+Subscribe to every catalog track in every announced broadcast under a room prefix:
+
+```bash
+cargo run --example clock_example -- --broadcast clock-room --catalog sesame subscribe --room --all-catalog-tracks
+```
+
+Run a self-contained exact-broadcast smoke test for catalog-discovered tracks:
+
+```bash
+cargo run --example clock_example -- --broadcast clock-smoke catalog-smoke
+```
+
+Run a self-contained room smoke test with multiple catalog publishers:
+
+```bash
+cargo run --example clock_example -- --broadcast clock-smoke-room catalog-smoke --room --publishers 3
+```
+
+In room mode, data callbacks receive track names in the form:
+
+```text
+broadcast_path/track_name
+```
+
+## Rust Hang Subscriber
+
+Exact broadcast:
+
+```bash
+cargo run --example hang_subscriber -- --broadcast me
+```
+
+Room prefix:
+
+```bash
+cargo run --example hang_subscriber -- --broadcast room-prefix --room
+```
+
+Catalog-driven room subscription:
+
+```bash
+cargo run --example hang_subscriber -- --broadcast room-prefix --room --all-catalog-tracks
+```
+
+## Native Rust MoQ Clock
+
+The nested `moq-clock` sample uses `moq-native 0.19` directly.
+
+```bash
+cargo run --manifest-path examples/moq-clock/Cargo.toml -- --broadcast clock-native publish
+cargo run --manifest-path examples/moq-clock/Cargo.toml -- --broadcast clock-native subscribe
+```
+
+Room test with multiple publishers:
+
+```bash
+cargo run --manifest-path examples/moq-clock/Cargo.toml -- --broadcast native-room publish --publishers 3
+cargo run --manifest-path examples/moq-clock/Cargo.toml -- --broadcast native-room subscribe --room
+```
+
+## C++ Examples
+
+Build and install the library first:
+
+```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build --config Release
+cmake --install build --prefix install
 ```
 
-If you installed the library to a custom location, specify the prefix:
+Then build the examples:
+
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/path/to/install
-cmake --build build
+cmake -B build-examples -S examples -DCMAKE_PREFIX_PATH=../install
+cmake --build build-examples --config Release
 ```
 
-## Running the Examples
+Run one publisher:
 
-### Clock Publisher
 ```bash
-# Use default relay and broadcast name
-./build/clock_publisher_example
-
-# Specify custom relay and broadcast name
-./build/clock_publisher_example https://relay.example.com:4443 my-broadcast
+./build-examples/clock_publisher_example
 ```
 
-### Clock Subscriber  
+Run three publishers under one room prefix:
+
 ```bash
-# Use default relay and broadcast name
-./build/clock_subscriber_example
-
-# Specify custom relay and broadcast name
-./build/clock_subscriber_example https://relay.example.com:4443 my-broadcast
+./build-examples/clock_publisher_example https://r2.moq.sesame-streams.com:4433 cpp-room 3 1000
 ```
 
-## Examples Description
+Subscribe to one exact broadcast:
 
-- **clock_publisher.cpp**: Publishes current time data every second over MOQ
-- **clock_subscriber.cpp**: Subscribes to and displays time data from a MOQ broadcast
+```bash
+./build-examples/clock_subscriber_example https://r2.moq.sesame-streams.com:4433 clock-cpp exact
+```
 
-These examples demonstrate the basic publisher/subscriber pattern using the MOQ protocol.
+Subscribe using every track listed in the catalog:
+
+```bash
+./build-examples/clock_subscriber_example https://r2.moq.sesame-streams.com:4433 clock-cpp exact clock sesame true
+```
+
+Subscribe to every announced broadcast under a room prefix:
+
+```bash
+./build-examples/clock_subscriber_example https://r2.moq.sesame-streams.com:4433 cpp-room room
+```
+
+Subscribe to every catalog track in every announced broadcast under a room prefix:
+
+```bash
+./build-examples/clock_subscriber_example https://r2.moq.sesame-streams.com:4433 cpp-room room clock sesame true
+```
+
+On Windows, the built executables are usually under `build-examples/Release/`.

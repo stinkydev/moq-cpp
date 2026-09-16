@@ -1,6 +1,6 @@
 # MOQ Wrapper Project
 
-A comprehensive wrapper library for MOQ (Media over QUIC) with automatic reconnection and simplified APIs for both Rust and C++.
+A wrapper library for MOQ (Media over QUIC) with simplified Rust and C++ APIs, announced broadcast discovery, and room-prefix subscriptions.
 
 ## Project Structure
 
@@ -8,7 +8,7 @@ A comprehensive wrapper library for MOQ (Media over QUIC) with automatic reconne
 /
 ├── src/                    # Rust source code
 │   ├── lib.rs             # Simplified public API
-│   ├── session.rs         # Session management with auto-reconnection
+│   ├── session.rs         # Session management and announce handling
 │   ├── subscription.rs    # Resilient subscription handling
 │   ├── catalog.rs         # Catalog management
 │   ├── track.rs          # Track management
@@ -88,12 +88,12 @@ See `examples/README.md` for detailed instructions.
 ### Rust API - Simplified Interface
 
 ```rust
-use moq_wrapper::{init, create_publisher, create_subscriber, write_frame, TrackDefinition, Level};
+use moq_wrapper::{create_publisher, set_log_level, write_frame, CatalogType, Level, TrackDefinition};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize with logging
-    init(Level::INFO, None);
+    set_log_level(Level::INFO);
     
     // Create publisher with track definitions
     let tracks = vec![
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     
     let session = create_publisher(
-        "https://relay1.moq.sesame-streams.com:4433",
+        "https://r2.moq.sesame-streams.com:4433",
         "my-broadcast",
         tracks,
         CatalogType::None  // No catalog needed for simple use cases
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_frame(&session, "seconds", "2024-11-05 12:00:00".into(), true).await?; // new_group=true
     write_frame(&session, "seconds", "30".into(), false).await?; // add to current group
     
-    // All errors are handled gracefully - no need for manual reconnection logic
+    // Handle errors at the application boundary and watch session events/callbacks.
     
     Ok(())
 }
@@ -127,14 +127,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 int main() {
     // Initialize with logging
-    moq::Init(moq::LogLevel::kInfo);
+    moq::SetLogLevel(moq::LogLevel::kInfo);
     
     // Create publisher with simple track definition
     std::vector<moq::TrackDefinition> tracks;
     tracks.emplace_back("seconds", 0, moq::TrackType::kData);
     
     auto session = moq::Session::CreatePublisher(
-        "https://relay1.moq.sesame-streams.com:4433",
+        "https://r2.moq.sesame-streams.com:4433",
         "my-broadcast",
         tracks,
         moq::CatalogType::kNone
@@ -158,19 +158,19 @@ int main() {
 ## Features
 
 ### Core Features
-- **Automatic Reconnection**: Infinite reconnection attempts with exponential backoff - never gives up
+- **Announce-Based Rooms**: Subscribe to every announced broadcast under a prefix
 - **Simplified API**: Just two main functions - `write_frame()` and `write_single_frame()`
 - **Bulletproof Error Handling**: All operations handle network interruptions gracefully
-- **Zero Manual Connection Management**: No need to check connection status or implement reconnection logic
+- **Simple Connection Management**: Sessions expose callbacks/events for connection and announce state
 - **Track Auto-Creation**: Track producers are automatically created and managed
-- **Session-Level Resilience**: Applications continue running even during network outages
+- **Session-Level Diagnostics**: Applications can react to disconnects, announces, and unannounces
 
 ### Rust Features  
 - **Async/Await**: Full async support with Tokio runtime
-- **Graceful Degradation**: Operations fail gracefully during reconnection, resume automatically
+- **Graceful Degradation**: Operations fail gracefully when the connection is unavailable
 - **Clean API**: `write_frame(session, track, data, new_group)` - that's it!
 - **Type Safety**: Strong typing for all MOQ concepts
-- **Production Ready**: Used in real-world applications with network instability
+- **Room Subscriptions**: `create_room_subscriber` follows announced broadcasts under a prefix
 
 ### C++ Features
 - **Modern C++17**: RAII, smart pointers, and Google style guidelines  
@@ -185,43 +185,52 @@ int main() {
 - ✅ **Group management and cleanup**
 - ✅ **Catalog publishing (when configured)**
 - ✅ **Network interruption handling**
-- ✅ **State synchronization after reconnection**
+- ✅ **Announcement and unannouncement events**
 
 ## Examples
 
 ### Running Rust Examples
 
 ```bash
-# Clock publisher (with automatic reconnection)
+# Clock publisher
 cargo run --example clock_example -- \
-  --url https://relay1.moq.sesame-streams.com:4433 \
+  --url https://r2.moq.sesame-streams.com:4433 \
   --broadcast my-clock \
   publish
 
-# Clock subscriber (resilient to publisher disconnections)
+# Clock subscriber
 cargo run --example clock_example -- \
-  --url https://relay1.moq.sesame-streams.com:4433 \
+  --url https://r2.moq.sesame-streams.com:4433 \
   --broadcast my-clock \
   subscribe
 
+# Room subscriber for multiple announced publishers
+cargo run --example clock_example -- \
+  --url https://r2.moq.sesame-streams.com:4433 \
+  --broadcast my-room \
+  subscribe --room
+
 # Hang subscriber  
 cargo run --example hang_subscriber \
-  --url https://relay1.moq.sesame-streams.com:4433 \
+  --url https://r2.moq.sesame-streams.com:4433 \
   --broadcast hang-broadcast
 ```
 
 ### Running C++ Examples
 
 ```bash
-# Build examples first
-cmake .. -DBUILD_EXAMPLES=ON
-cmake --build .
+# Build and install the library, then build examples
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+cmake --install build --prefix install
+cmake -B build-examples -S examples -DCMAKE_PREFIX_PATH=install
+cmake --build build-examples --config Release
 
-# Clock publisher (automatically handles reconnection)
-./clock_publisher_cpp https://relay1.moq.sesame-streams.com:4433 my-clock
+# Clock publisher
+./build-examples/Release/clock_publisher_example.exe https://r2.moq.sesame-streams.com:4433 my-clock
 
-# Clock subscriber (resilient to network issues)
-./clock_subscriber_cpp https://relay1.moq.sesame-streams.com:4433 my-clock
+# Room subscriber
+./build-examples/Release/clock_subscriber_example.exe https://r2.moq.sesame-streams.com:4433 my-room room
 ```
 
 ### Example Error Handling
@@ -255,8 +264,7 @@ The Rust library automatically builds with FFI support when building the CMake p
 ## Dependencies
 
 ### Rust Dependencies
-- `moq-lite`: Core MOQ protocol implementation
-- `moq-native`: Native MOQ implementation with QUIC
+- `moq-native`: Native MOQ implementation with QUIC and MoQ networking types
 - `tokio`: Async runtime
 - `tracing`: Logging framework
 - `anyhow`: Error handling
@@ -306,13 +314,21 @@ write_single_frame(session: &MoqSession, track: &str, data: Vec<u8>) -> Result<(
 // Session creation (handles everything automatically)
 create_publisher(url: &str, broadcast: &str, tracks: Vec<TrackDefinition>, catalog: CatalogType) -> Result<MoqSession>
 create_subscriber(url: &str, broadcast: &str, tracks: Vec<TrackDefinition>, catalog: CatalogType) -> Result<MoqSession>
+create_room_subscriber(url: &str, room_prefix: &str, tracks: Vec<TrackDefinition>, catalog: CatalogType) -> Result<MoqSession>
+create_subscriber_with_options(url: &str, broadcast: &str, tracks: Vec<TrackDefinition>, catalog: CatalogType, subscribe_all_catalog_tracks: bool) -> Result<MoqSession>
+create_room_subscriber_with_options(url: &str, room_prefix: &str, tracks: Vec<TrackDefinition>, catalog: CatalogType, subscribe_all_catalog_tracks: bool) -> Result<MoqSession>
 ```
 
 **Key Benefits:**
-- **No connection management needed** - sessions handle everything
+- **Simple connection management** - sessions expose state, events, and callbacks
 - **No manual track producer creation** - automatic on connection
-- **No reconnection logic required** - infinite retry built-in
+- **Room subscriptions** - subscribe to announced broadcasts under a prefix
+- **Catalog track subscriptions** - optionally subscribe to every track listed in `catalog.json`
 - **Graceful error handling** - operations fail safely during network issues
+
+Pass `subscribe_all_catalog_tracks = true` with `CatalogType::Sesame` or `CatalogType::Hang`
+to subscribe to catalog-discovered tracks. Explicitly requested tracks still work; pass an
+empty track list for catalog-only subscriptions.
 
 ### Simplified C++ API
 
@@ -327,32 +343,37 @@ bool WriteSingleFrame(const std::string& track, const void* data, size_t size);
 // Session creation (everything automatic)
 static std::unique_ptr<Session> CreatePublisher(const std::string& url, const std::string& broadcast, 
                                                const std::vector<TrackDefinition>& tracks, CatalogType catalog);
+static std::unique_ptr<Session> CreateSubscriber(const std::string& url, const std::string& broadcast,
+                                                 const std::vector<TrackDefinition>& tracks, CatalogType catalog,
+                                                 bool subscribe_all_catalog_tracks = false);
+static std::unique_ptr<Session> CreateRoomSubscriber(const std::string& url, const std::string& room_prefix,
+                                                     const std::vector<TrackDefinition>& tracks, CatalogType catalog,
+                                                     bool subscribe_all_catalog_tracks = false);
 ```
 
 **Key Benefits:**
 - **RAII resource management** - automatic cleanup
 - **Thread-safe operations** - safe from multiple threads  
-- **No manual connection checking** - just call methods
-- **Automatic reconnection** - transparent to application
+- **Connection callbacks** - react to disconnects and announce/unannounce events
+- **Room subscriptions** - data callbacks identify the broadcast path in room mode
+- **Catalog track subscriptions** - opt into all tracks from `catalog.json`
 
 ## Thread Safety
 
 - **Rust**: All public APIs are Send + Sync safe - use from any async context
 - **C++**: Thread-safe operations - safe to call WriteFrame from multiple threads
 - **Callbacks**: May be called from background threads - ensure thread safety in your code
-- **Session Management**: All reconnection logic runs on background tasks - non-blocking
+- **Session Management**: Connection and announce callbacks run on background threads/tasks
 
 ## Migration from Complex APIs
 
 If you're migrating from a more complex MOQ implementation:
 
-### What You Can Remove ❌
-- Manual connection status checking
-- Reconnection logic and retry loops  
+### What You Can Simplify
 - Track producer creation and management
 - Group lifecycle management
-- Network error recovery code
-- Connection state synchronization
+- Announcement polling and room-prefix fan-out
+- Cross-language callback plumbing
 
 ### What You Keep ✅  
 - Your application logic
@@ -382,32 +403,29 @@ loop {
 **After (simple):**
 ```rust
 // New simple code
-write_frame(&session, "track", data, false).await?;
-// That's it! All error handling and reconnection is automatic
+if let Err(err) = write_frame(&session, "track", data, false).await {
+    warn!("write failed: {}", err);
+}
 ```
 
 ## Error Handling
 
-### Rust Error Handling - Bulletproof by Design
+### Rust Error Handling
 
 ```rust
-// All operations handle errors gracefully - no manual error checking needed!
 match write_frame(&session, "track", data, true).await {
     Ok(_) => {}, // Success - data sent
     Err(e) => {
-        // Just log and continue - session will reconnect automatically
-        warn!("Temporary failure: {}", e);
-        // Application keeps running, will work again when connection restored
+        warn!("write failed: {}", e);
     }
 }
 ```
 
-**Built-in Error Recovery:**
-- ✅ **Network disconnections**: Infinite reconnection attempts
-- ✅ **Track producer failures**: Automatic recreation
-- ✅ **Group management errors**: Automatic cleanup and retry
-- ✅ **Session failures**: Transparent reconnection
-- ✅ **Relay unavailability**: Keeps trying until available
+**Useful Signals:**
+- ✅ **Connection events**: Connected and disconnected session events
+- ✅ **Broadcast events**: Announced and unannounced broadcasts
+- ✅ **Room data identity**: Room callbacks include `broadcast_path/track_name`
+- ✅ **Write results**: Publishing methods return errors for the caller to handle
 
 ### C++ Error Handling - Simple and Safe
 
@@ -416,15 +434,15 @@ match write_frame(&session, "track", data, true).await {
 if (session->WriteFrame("track", data.c_str(), data.size(), true)) {
     // Success
 } else {
-    // Temporary failure - session will reconnect automatically
-    std::cout << "Temporary failure, will retry automatically" << std::endl;
+    std::cout << "Write failed" << std::endl;
 }
 ```
 
-**No Manual Recovery Needed:**
-- Session handles all reconnection logic internally
-- Applications continue running during network outages  
-- Operations resume automatically when connection restored
+**Callbacks Available:**
+- Data callbacks
+- Broadcast announced callbacks
+- Broadcast cancelled callbacks
+- Connection closed callbacks
 
 ## Contributing
 

@@ -1,101 +1,70 @@
-use anyhow::Context;
+use std::time::Duration;
 
-use chrono::prelude::*;
-use moq_lite::*;
+use chrono::{SecondsFormat, Utc};
+use moq_native::moq_net::{self, Timestamp};
 
 pub struct Publisher {
-	track: TrackProducer,
+    broadcast: String,
+    track: moq_net::track::Producer,
+    interval: Duration,
 }
 
 impl Publisher {
-	pub fn new(track: TrackProducer) -> Self {
-		Self { track }
-	}
+    pub fn new(
+        broadcast: impl Into<String>,
+        track: moq_net::track::Producer,
+        interval: Duration,
+    ) -> Self {
+        Self {
+            broadcast: broadcast.into(),
+            track,
+            interval,
+        }
+    }
 
-	pub async fn run(mut self) -> anyhow::Result<()> {
-		let start = Utc::now();
-		let mut now = start;
+    pub async fn run(mut self) -> anyhow::Result<()> {
+        let mut ticker = tokio::time::interval(self.interval);
 
-		// Just for fun, don't start at zero.
-		let mut sequence = start.minute();
+        loop {
+            ticker.tick().await;
 
-		loop {
-			let segment = self.track.create_group(sequence.into()).unwrap();
-
-			sequence += 1;
-
-			tokio::spawn(async move {
-				if let Err(err) = Self::send_segment(segment, now).await {
-					tracing::warn!("failed to send minute: {:?}", err);
-				}
-			});
-
-			let next = now + chrono::Duration::try_minutes(1).unwrap();
-			let next = next.with_second(0).unwrap().with_nanosecond(0).unwrap();
-
-			let delay = (next - now).to_std().unwrap();
-			tokio::time::sleep(delay).await;
-
-			now = next; // just assume we didn't undersleep
-		}
-	}
-
-	async fn send_segment(mut segment: GroupProducer, mut now: DateTime<Utc>) -> anyhow::Result<()> {
-		// Everything but the second.
-		let base = now.format("%Y-%m-%d %H:%M:").to_string();
-
-		segment.write_frame(base.clone());
-
-		loop {
-			let delta = now.format("%S").to_string();
-			segment.write_frame(delta.clone());
-
-			let next = now + chrono::Duration::try_seconds(1).unwrap();
-			let next = next.with_nanosecond(0).unwrap();
-
-			let delay = (next - now).to_std().unwrap();
-			tokio::time::sleep(delay).await;
-
-			// Get the current time again to check if we overslept
-			let next = Utc::now();
-			if next.minute() != now.minute() {
-				break;
-			}
-
-			now = next;
-		}
-
-		segment.close();
-
-		Ok(())
-	}
+            let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let payload = format!("{} {}", self.broadcast, timestamp);
+            self.track.write_frame(Timestamp::now(), payload.clone())?;
+            tracing::info!(
+                broadcast = %self.broadcast,
+                track = "clock",
+                payload = %payload,
+                "published clock frame"
+            );
+        }
+    }
 }
+
 pub struct Subscriber {
-	track: TrackConsumer,
+    broadcast: String,
+    track: moq_net::track::Subscriber,
 }
 
 impl Subscriber {
-	pub fn new(track: TrackConsumer) -> Self {
-		Self { track }
-	}
+    pub fn new(broadcast: impl Into<String>, track: moq_net::track::Subscriber) -> Self {
+        Self {
+            broadcast: broadcast.into(),
+            track,
+        }
+    }
 
-	pub async fn run(mut self) -> anyhow::Result<()> {
-		while let Some(mut group) = self.track.next_group().await? {
-			let base = group
-				.read_frame()
-				.await
-				.context("failed to get first object")?
-				.context("empty group")?;
+    pub async fn run(mut self) -> anyhow::Result<()> {
+        let mut count = 0usize;
 
-			let base = String::from_utf8_lossy(&base);
+        while let Some(mut group) = self.track.next_group().await? {
+            while let Some(frame) = group.read_frame().await? {
+                count += 1;
+                let payload = String::from_utf8_lossy(&frame.payload);
+                println!("[{}] frame #{}: {}", self.broadcast, count, payload);
+            }
+        }
 
-			while let Some(object) = group.read_frame().await? {
-				let str = String::from_utf8_lossy(&object);
-				//println!("{base}{str}");
-				println!("{}", str.len());
-			}
-		}
-
-		Ok(())
-	}
+        Ok(())
+    }
 }

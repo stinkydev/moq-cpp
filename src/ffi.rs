@@ -6,9 +6,9 @@ use tokio::runtime::Runtime;
 use tracing::{info, Level};
 
 use crate::{
-    close_session, create_publisher, create_subscriber, publish_data, set_data_callback,
-    set_log_level, write_frame, write_single_frame, CatalogType, MoqSession, TrackDefinition,
-    TrackType,
+    close_session, create_publisher, create_room_subscriber_with_options,
+    create_subscriber_with_options, publish_data, set_data_callback, set_log_level, write_frame,
+    write_single_frame, CatalogType, MoqSession, TrackDefinition, TrackType,
 };
 
 // Opaque handles for C API
@@ -287,6 +287,7 @@ pub unsafe extern "C" fn moq_create_subscriber(
     tracks: *const CTrackDefinitionFFI,
     track_count: usize,
     catalog_type: CCatalogType,
+    subscribe_all_catalog_tracks: c_int,
 ) -> *mut CMoqSession {
     if url.is_null() || broadcast_name.is_null() {
         return ptr::null_mut();
@@ -347,11 +348,103 @@ pub unsafe extern "C" fn moq_create_subscriber(
         Err(_) => return ptr::null_mut(),
     };
 
-    let session = match runtime.block_on(create_subscriber(
+    let session = match runtime.block_on(create_subscriber_with_options(
         url_str,
         broadcast_str,
         track_defs,
         CatalogType::from(catalog_type),
+        subscribe_all_catalog_tracks != 0,
+    )) {
+        Ok(s) => Arc::new(s),
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let c_session = CMoqSession {
+        session,
+        runtime,
+        data_callback: Arc::new(RwLock::new(None)),
+        broadcast_announced_callback: Arc::new(RwLock::new(None)),
+        broadcast_cancelled_callback: Arc::new(RwLock::new(None)),
+        connection_closed_callback: Arc::new(RwLock::new(None)),
+    };
+
+    Box::into_raw(Box::new(c_session))
+}
+
+/// Create a room subscriber session that subscribes to every announced broadcast
+/// under `room_prefix`.
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers passed from C.
+/// The caller must ensure that:
+/// - `url` and `room_prefix` are valid null-terminated C strings
+/// - `tracks` is a valid array of `track_count` elements
+/// - All track pointers in the array are valid
+#[no_mangle]
+pub unsafe extern "C" fn moq_create_room_subscriber(
+    url: *const c_char,
+    room_prefix: *const c_char,
+    tracks: *const CTrackDefinitionFFI,
+    track_count: usize,
+    catalog_type: CCatalogType,
+    subscribe_all_catalog_tracks: c_int,
+) -> *mut CMoqSession {
+    if url.is_null() || room_prefix.is_null() {
+        return ptr::null_mut();
+    }
+
+    let url_str = unsafe {
+        match CStr::from_ptr(url).to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
+    let room_prefix_str = unsafe {
+        match CStr::from_ptr(room_prefix).to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
+    let track_defs = if !tracks.is_null() && track_count > 0 {
+        let track_slice = unsafe { std::slice::from_raw_parts(tracks, track_count) };
+        let mut result = Vec::new();
+        for track_ffi in track_slice.iter() {
+            if track_ffi.name.is_null() {
+                continue;
+            }
+
+            let name_str = unsafe {
+                match CStr::from_ptr(track_ffi.name).to_str() {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                }
+            };
+
+            result.push(TrackDefinition::new(
+                name_str,
+                track_ffi.priority,
+                TrackType::from(CTrackType::from(track_ffi.track_type)),
+            ));
+        }
+        result
+    } else {
+        Vec::new()
+    };
+
+    let runtime = match Runtime::new() {
+        Ok(rt) => Arc::new(rt),
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let session = match runtime.block_on(create_room_subscriber_with_options(
+        url_str,
+        room_prefix_str,
+        track_defs,
+        CatalogType::from(catalog_type),
+        subscribe_all_catalog_tracks != 0,
     )) {
         Ok(s) => Arc::new(s),
         Err(_) => return ptr::null_mut(),

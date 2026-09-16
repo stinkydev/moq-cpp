@@ -1,36 +1,94 @@
-use anyhow::Result;
-use chrono::{Timelike, Utc};
+use anyhow::{bail, Result};
+use chrono::{SecondsFormat, Utc};
 use clap::{Parser, Subcommand};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::time::sleep;
+use tokio::time::{interval, timeout, Duration};
 use tracing::{info, warn};
 
 use moq_wrapper::{
-    close_session, create_publisher, create_subscriber, set_log_level, write_frame, CatalogType,
-    Level, MoqSession, SessionEvent, TrackDefinition, TrackType,
+    close_session, create_publisher, create_room_subscriber_with_options,
+    create_subscriber_with_options, set_log_level, write_single_frame, CatalogType, Level,
+    MoqSession, SessionEvent, TrackDefinition,
 };
 
+const DEFAULT_RELAY: &str = "https://r2.moq.sesame-streams.com:4433";
+const DEFAULT_TRACK: &str = "clock";
+
 #[derive(Parser)]
-#[command(author, version, about = "MoQ Clock example using moq-wrapper")]
+#[command(author, version, about = "MoQ clock example using moq-wrapper")]
 struct Args {
-    /// MoQ relay URL
-    #[arg(long, default_value = "https://r1.moq.sesame-streams.com:4433")]
+    /// MoQ relay URL.
+    #[arg(long, default_value = DEFAULT_RELAY)]
     url: String,
 
-    /// Broadcast name
-    #[arg(long, default_value = "peter2")]
+    /// Broadcast name, or room prefix when publishing multiple broadcasts.
+    #[arg(long, default_value = "clock-rust")]
     broadcast: String,
 
-    /// Track name
-    #[arg(long, default_value = "video")]
+    /// Track name.
+    #[arg(long, default_value = DEFAULT_TRACK)]
     track: String,
 
-    /// Catalog type to use (none, sesame, hang)
-    #[arg(long, default_value = "sesame", value_parser = parse_catalog_type)]
+    /// Catalog type to use (none, sesame, hang).
+    #[arg(long, default_value = "none", value_parser = parse_catalog_type)]
     catalog: CatalogType,
 
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Publish clock data.
+    Publish {
+        /// Number of publishers to start. Values greater than 1 publish under
+        /// `<broadcast>/publisher-N`.
+        #[arg(long, default_value_t = 1)]
+        publishers: usize,
+
+        /// Delay between clock frames for each publisher.
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+    },
+
+    /// Subscribe to clock data.
+    Subscribe {
+        /// Treat the broadcast argument as an announcement prefix.
+        #[arg(long)]
+        room: bool,
+
+        /// Override the room prefix used with `--room`.
+        #[arg(long)]
+        room_prefix: Option<String>,
+
+        /// Subscribe to every track listed in catalog.json.
+        #[arg(long)]
+        all_catalog_tracks: bool,
+    },
+
+    /// Run a self-contained catalog-track subscription smoke test.
+    CatalogSmoke {
+        /// Treat the broadcast argument as an announcement prefix.
+        #[arg(long)]
+        room: bool,
+
+        /// Number of publishers to start. Room mode uses one broadcast per publisher.
+        #[arg(long, default_value_t = 2)]
+        publishers: usize,
+
+        /// Maximum number of frames to send per publisher while waiting.
+        #[arg(long, default_value_t = 20)]
+        frames: usize,
+
+        /// Delay between clock frames for each publisher.
+        #[arg(long, default_value_t = 250)]
+        interval_ms: u64,
+
+        /// Timeout for the smoke test.
+        #[arg(long, default_value_t = 15)]
+        timeout_secs: u64,
+    },
 }
 
 fn parse_catalog_type(s: &str) -> Result<CatalogType, String> {
@@ -39,288 +97,396 @@ fn parse_catalog_type(s: &str) -> Result<CatalogType, String> {
         "sesame" => Ok(CatalogType::Sesame),
         "hang" => Ok(CatalogType::Hang),
         _ => Err(format!(
-            "Invalid catalog type: {}. Valid options: none, sesame, hang",
-            s
+            "Invalid catalog type: {s}. Valid options: none, sesame, hang"
         )),
     }
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// Publish clock data
-    Publish,
-    /// Subscribe to clock data
-    Subscribe,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    set_log_level(Level::INFO);
 
-    // Initialize logging using the moq-wrapper set_log_level function
-    set_log_level(Level::DEBUG);
-
-    match args.command {
-        Command::Publish => run_publisher(args).await,
-        Command::Subscribe => run_subscriber(args).await,
+    match &args.command {
+        Command::Publish {
+            publishers,
+            interval_ms,
+        } => run_publisher(&args, *publishers, *interval_ms).await,
+        Command::Subscribe {
+            room,
+            room_prefix,
+            all_catalog_tracks,
+        } => run_subscriber(&args, *room, room_prefix.as_deref(), *all_catalog_tracks).await,
+        Command::CatalogSmoke {
+            room,
+            publishers,
+            frames,
+            interval_ms,
+            timeout_secs,
+        } => {
+            run_catalog_smoke(
+                &args,
+                *room,
+                *publishers,
+                *frames,
+                *interval_ms,
+                *timeout_secs,
+            )
+            .await
+        }
     }
 }
 
-async fn run_publisher(args: Args) -> Result<()> {
-    info!("🕐 Starting MoQ clock publisher");
+async fn run_publisher(args: &Args, publishers: usize, interval_ms: u64) -> Result<()> {
+    if publishers == 0 {
+        bail!("--publishers must be at least 1");
+    }
 
-    // Create tracks to publish
+    let interval = Duration::from_millis(interval_ms.max(1));
+    let track = TrackDefinition::data(args.track.clone(), 0);
+    let mut sessions = Vec::new();
+    let mut tasks = Vec::new();
 
-    let tracks = vec![TrackDefinition::data(args.track.clone(), 0)];
+    for broadcast in publisher_broadcasts(&args.broadcast, publishers) {
+        let session = Arc::new(
+            create_publisher(
+                &args.url,
+                &broadcast,
+                vec![track.clone()],
+                args.catalog.clone(),
+            )
+            .await?,
+        );
 
-    // Create publisher session with tracks and specified catalog type
-    let session =
-        create_publisher(&args.url, &args.broadcast, tracks, args.catalog.clone()).await?;
+        spawn_event_logger(session.clone(), broadcast.clone());
 
-    // Monitor events
-    let session = Arc::new(session);
-    let event_session = session.clone();
-    tokio::spawn(async move {
-        while let Some(event) = event_session.next_event().await {
-            match event {
-                SessionEvent::Connected => info!("✅ Connected to relay"),
-                SessionEvent::Disconnected { reason } => warn!("❌ Disconnected: {}", reason),
-                SessionEvent::Error { error } => warn!("🚨 Error: {}", error),
-                _ => {}
-            }
-        }
-    });
+        let task = tokio::spawn(
+            ClockPublisher::new(
+                session.clone(),
+                broadcast.clone(),
+                args.track.clone(),
+                interval,
+            )
+            .run(),
+        );
 
-    info!(
-        "📡 Publishing clock data on track: {} (catalog: {:?})",
-        args.track, args.catalog
-    );
+        info!(
+            "Publishing clock frames on broadcast '{}' track '{}'",
+            broadcast, args.track
+        );
+        sessions.push(session);
+        tasks.push(task);
+    }
 
-    // Start clock publisher
-    let mut clock_publisher = ClockPublisher::new(session, args.track.clone());
-    clock_publisher.run().await?;
+    info!("Press Ctrl+C to stop");
+    tokio::signal::ctrl_c().await?;
+
+    for session in &sessions {
+        close_session(session).await?;
+    }
+    for task in tasks {
+        task.abort();
+    }
 
     Ok(())
 }
 
-async fn run_subscriber(args: Args) -> Result<()> {
-    info!("🕐 Starting MoQ clock subscriber");
-
-    let track_name = args.track.clone();
-
-    // Create subscriber session with no specific tracks (will subscribe manually)
-    let track_def = TrackDefinition {
-        name: track_name.clone(),
-        priority: 0,
-        track_type: TrackType::Video,
+async fn run_subscriber(
+    args: &Args,
+    room: bool,
+    room_prefix: Option<&str>,
+    all_catalog_tracks: bool,
+) -> Result<()> {
+    let catalog_type = effective_subscriber_catalog(&args.catalog, all_catalog_tracks);
+    let tracks = if all_catalog_tracks {
+        Vec::new()
+    } else {
+        vec![TrackDefinition::data(args.track.clone(), 0)]
     };
 
-    let track_def2 = TrackDefinition {
-        name: "audio".to_string(),
-        priority: 0,
-        track_type: TrackType::Audio,
-    };
-
-    let tracks = vec![track_def, track_def2];
-
-    let session =
-        create_subscriber(&args.url, &args.broadcast, tracks, args.catalog.clone()).await?;
-    let session = Arc::new(session);
-
-    // Monitor events
-    let session_clone = session.clone();
-    tokio::spawn(async move {
-        while let Some(event) = session_clone.next_event().await {
-            match event {
-                SessionEvent::Connected => info!("✅ Connected to relay"),
-                SessionEvent::Disconnected { reason } => warn!("❌ Disconnected: {}", reason),
-                SessionEvent::BroadcastAnnounced { path } => {
-                    info!("📢 Broadcast announced: {}", path)
-                }
-                SessionEvent::Error { error } => warn!("🚨 Error: {}", error),
-                _ => {}
+    let session = if room {
+        let prefix = room_prefix.unwrap_or(&args.broadcast);
+        info!(
+            "Subscribing to room prefix '{}'{}",
+            prefix,
+            if all_catalog_tracks {
+                " using catalog tracks"
+            } else {
+                " on configured track"
             }
-        }
-    });
+        );
+        create_room_subscriber_with_options(
+            &args.url,
+            prefix,
+            tracks,
+            catalog_type,
+            all_catalog_tracks,
+        )
+        .await?
+    } else {
+        info!(
+            "Subscribing to broadcast '{}'{}",
+            args.broadcast,
+            if all_catalog_tracks {
+                " using catalog tracks"
+            } else {
+                " on configured track"
+            }
+        );
+        create_subscriber_with_options(
+            &args.url,
+            &args.broadcast,
+            tracks,
+            catalog_type,
+            all_catalog_tracks,
+        )
+        .await?
+    };
 
-    info!(
-        "🎯 Subscribing to track: {} (catalog: {:?})",
-        args.track, args.catalog
-    );
+    let session = Arc::new(session);
+    spawn_event_logger(session.clone(), "subscriber".to_string());
 
-    // Set up a clock display callback using the new auto-subscription method
-    let _ = session
+    let state = Arc::new(std::sync::Mutex::new(ClockState::default()));
+    session
         .set_data_callback({
-            use std::sync::Mutex;
-            let state = Arc::new(Mutex::new(ClockState::new()));
-
+            let state = state.clone();
             move |track: String, data: Vec<u8>| {
-                info!("📥 Received frame on track {}: {} bytes", track, data.len());
-                if let Ok(text) = String::from_utf8(data) {
-                    state.lock().unwrap().process_frame(text);
-                }
+                state.lock().unwrap().process_frame(track, data);
             }
         })
-        .await;
+        .await?;
 
-    info!("🎯 Enabled auto-subscription for track: {}", args.track);
-
-    info!("📥 Listening for clock data... Press Ctrl+C to stop");
-
-    // Keep the main thread alive
+    info!("Listening for clock data. Press Ctrl+C to stop");
     tokio::signal::ctrl_c().await?;
-    info!("⏹️ Received shutdown signal");
 
-    // Close the session
     close_session(&session).await?;
-    info!("📥 Clock subscriber finished");
     Ok(())
 }
 
-/// Clock publisher that sends time data similar to the original moq-clock example
+async fn run_catalog_smoke(
+    args: &Args,
+    room: bool,
+    publishers: usize,
+    frames: usize,
+    interval_ms: u64,
+    timeout_secs: u64,
+) -> Result<()> {
+    if publishers == 0 {
+        bail!("--publishers must be at least 1");
+    }
+    if frames == 0 {
+        bail!("--frames must be at least 1");
+    }
+
+    let publisher_count = if room { publishers } else { 1 };
+    let broadcasts = publisher_broadcasts(&args.broadcast, publisher_count);
+    let track = TrackDefinition::data(args.track.clone(), 0);
+    let mut publisher_sessions = Vec::new();
+
+    for broadcast in &broadcasts {
+        let session = Arc::new(
+            create_publisher(
+                &args.url,
+                broadcast,
+                vec![track.clone()],
+                CatalogType::Sesame,
+            )
+            .await?,
+        );
+        spawn_event_logger(session.clone(), broadcast.clone());
+        publisher_sessions.push((broadcast.clone(), session));
+    }
+
+    let subscriber = if room {
+        create_room_subscriber_with_options(
+            &args.url,
+            &args.broadcast,
+            Vec::new(),
+            CatalogType::Sesame,
+            true,
+        )
+        .await?
+    } else {
+        create_subscriber_with_options(
+            &args.url,
+            &args.broadcast,
+            Vec::new(),
+            CatalogType::Sesame,
+            true,
+        )
+        .await?
+    };
+    let subscriber = Arc::new(subscriber);
+    spawn_event_logger(subscriber.clone(), "catalog-smoke".to_string());
+
+    let (data_tx, mut data_rx) = tokio::sync::mpsc::unbounded_channel();
+    subscriber
+        .set_data_callback(move |track: String, data: Vec<u8>| {
+            let _ = data_tx.send((track, data));
+        })
+        .await?;
+
+    let expected_tracks: HashSet<String> = if room {
+        broadcasts
+            .iter()
+            .map(|broadcast| format!("{}/{}", broadcast, args.track))
+            .collect()
+    } else {
+        HashSet::from([args.track.clone()])
+    };
+
+    info!(
+        "Running catalog smoke test with {} publisher(s), {} mode, track '{}'",
+        publisher_count,
+        if room { "room" } else { "exact" },
+        args.track
+    );
+
+    let publish_task = tokio::spawn({
+        let publisher_sessions = publisher_sessions.clone();
+        let track_name = args.track.clone();
+        let publish_delay = Duration::from_millis(interval_ms.max(1));
+        async move {
+            let mut ticker = interval(publish_delay);
+            for frame_index in 1..=frames {
+                ticker.tick().await;
+                for (broadcast, session) in &publisher_sessions {
+                    let payload = format!("catalog-smoke {} {}", broadcast, frame_index);
+                    write_single_frame(session, &track_name, payload.into_bytes()).await?;
+                }
+            }
+            anyhow::Ok(())
+        }
+    });
+
+    let observed = timeout(Duration::from_secs(timeout_secs.max(1)), async {
+        let mut observed = HashSet::new();
+        while observed.len() < expected_tracks.len() {
+            if let Some((track, data)) = data_rx.recv().await {
+                let payload = String::from_utf8_lossy(&data);
+                info!("Catalog smoke frame on '{}': {}", track, payload);
+                if expected_tracks.contains(&track) {
+                    observed.insert(track);
+                }
+            }
+        }
+        observed
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "timed out waiting for catalog tracks: {:?}",
+            expected_tracks
+        )
+    })?;
+
+    publish_task.abort();
+    close_session(&subscriber).await?;
+    for (_, session) in &publisher_sessions {
+        close_session(session).await?;
+    }
+
+    info!("Catalog smoke test passed for tracks: {:?}", observed);
+    Ok(())
+}
+
+fn publisher_broadcasts(base: &str, publishers: usize) -> Vec<String> {
+    if publishers == 1 {
+        return vec![base.to_string()];
+    }
+
+    let prefix = base.trim_end_matches('/');
+    (1..=publishers)
+        .map(|index| format!("{prefix}/publisher-{index}"))
+        .collect()
+}
+
+fn effective_subscriber_catalog(catalog: &CatalogType, all_catalog_tracks: bool) -> CatalogType {
+    if all_catalog_tracks && *catalog == CatalogType::None {
+        CatalogType::Sesame
+    } else {
+        catalog.clone()
+    }
+}
+
+fn spawn_event_logger(session: Arc<MoqSession>, label: String) {
+    tokio::spawn(async move {
+        while let Some(event) = session.next_event().await {
+            match event {
+                SessionEvent::Connected => info!("[{}] connected", label),
+                SessionEvent::Disconnected { reason } => {
+                    warn!("[{}] disconnected: {}", label, reason)
+                }
+                SessionEvent::BroadcastAnnounced { path } => {
+                    info!("[{}] announced: {}", label, path)
+                }
+                SessionEvent::BroadcastUnannounced { path } => {
+                    info!("[{}] unannounced: {}", label, path)
+                }
+                SessionEvent::TrackRequested { name } => {
+                    info!("[{}] track requested: {}", label, name)
+                }
+                SessionEvent::Error { error } => warn!("[{}] error: {}", label, error),
+            }
+        }
+    });
+}
+
 struct ClockPublisher {
     session: Arc<MoqSession>,
-    track_name: String,
+    broadcast: String,
+    track: String,
+    interval: Duration,
 }
 
 impl ClockPublisher {
-    fn new(session: Arc<MoqSession>, track_name: String) -> Self {
+    fn new(session: Arc<MoqSession>, broadcast: String, track: String, interval: Duration) -> Self {
         Self {
             session,
-            track_name,
+            broadcast,
+            track,
+            interval,
         }
     }
 
-    async fn run(&mut self) -> Result<()> {
-        let start = Utc::now();
-        let mut now = start;
-
-        // Just for fun, don't start at zero (like original moq-clock)
-        let mut sequence = start.minute() as u64;
+    async fn run(self) -> Result<()> {
+        let mut ticker = interval(self.interval);
 
         loop {
-            info!("📤 Starting minute segment #{}", sequence);
+            ticker.tick().await;
 
-            // Send the base timestamp (everything except seconds) as first frame of new group
-            let base = now.format("%Y-%m-%d %H:%M:").to_string();
-            match write_frame(
-                &self.session,
-                &self.track_name,
-                base.clone().into_bytes(),
-                true,
-            )
-            .await
+            let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let payload = format!("{} {}", self.broadcast, timestamp);
+
+            if let Err(err) =
+                write_single_frame(&self.session, &self.track, payload.clone().into_bytes()).await
             {
-                Ok(_) => {
-                    info!("📅 Sent base time: {}", base);
-                }
-                Err(e) => {
-                    warn!(
-                        "⏳ Failed to send base time (will retry next minute): {}",
-                        e
-                    );
-                    // Continue anyway, we'll try again next minute
-                }
+                warn!(
+                    "Failed to publish on broadcast '{}' track '{}': {}",
+                    self.broadcast, self.track, err
+                );
+                continue;
             }
 
-            let mut seconds_count = 0;
-
-            // Send individual seconds for this minute (like original moq-clock)
-            loop {
-                let seconds = now.format("%S").to_string();
-
-                // Try to write the frame, but handle all errors gracefully
-                match write_frame(&self.session, &self.track_name, seconds.into_bytes(), false)
-                    .await
-                {
-                    Ok(_) => {
-                        seconds_count += 1;
-                    }
-                    Err(e) => {
-                        warn!("⏳ Failed to write frame (skipping): {}", e);
-                        // Don't increment seconds_count, just continue to next second
-                    }
-                }
-
-                let next = now + chrono::Duration::try_seconds(1).unwrap();
-                let next = next.with_nanosecond(0).unwrap();
-
-                let delay = (next - now).to_std().unwrap();
-                sleep(delay).await;
-
-                // Get the current time again to check if we overslept
-                let next = Utc::now();
-                if next.minute() != now.minute() {
-                    info!(
-                        "📦 Minute changed, finishing group #{} with {} seconds",
-                        sequence, seconds_count
-                    );
-                    break;
-                }
-
-                now = next;
-            }
-
-            // Close the group for this minute
-            match self.session.close_group(&self.track_name).await {
-                Ok(_) => {
-                    info!(
-                        "📦 Closed group #{} with {} seconds",
-                        sequence, seconds_count
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "⏳ Failed to close group (will be cleaned up automatically): {}",
-                        e
-                    );
-                    // Continue anyway, group will be cleaned up on reconnection or next group
-                }
-            }
-
-            sequence += 1;
-            now = Utc::now(); // just assume we didn't undersleep (like original)
+            info!(
+                "Published '{}' on broadcast '{}' track '{}'",
+                payload, self.broadcast, self.track
+            );
         }
     }
 }
 
-/// Clock state for assembling time display from frames
+#[derive(Default)]
 struct ClockState {
-    #[allow(dead_code)]
-    base_time: Option<String>,
-    frame_count: usize,
+    frame_counts: HashMap<String, usize>,
 }
 
 impl ClockState {
-    fn new() -> Self {
-        Self {
-            base_time: None,
-            frame_count: 0,
-        }
-    }
+    fn process_frame(&mut self, track: String, data: Vec<u8>) {
+        let count = self.frame_counts.entry(track.clone()).or_insert(0);
+        *count += 1;
 
-    fn process_frame(&mut self, data: String) {
-        self.frame_count += 1;
-        info!("📥 Received frame #{}: {}", self.frame_count, data.len());
-        /*
-        if self.frame_count == 1 {
-            // First frame is the base timestamp (everything except seconds)
-            self.base_time = Some(data.clone());
-            info!("📅 [ClockState] Base time: {}", data);
-        } else if let Some(ref base) = self.base_time {
-            // Subsequent frames are seconds
-            if let Ok(seconds) = data.parse::<u32>() {
-                // Create clock emoji display
-                let clock_emojis = [
-                    "🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚",
-                ];
-                let clock_index = ((seconds as f64 / 60.0) * clock_emojis.len() as f64) as usize
-                    % clock_emojis.len();
-                let clock_emoji = clock_emojis[clock_index];
-
-                println!("{} {}{:02}", clock_emoji, base, seconds);
-            }
-        }
-        */
+        let payload = String::from_utf8_lossy(&data);
+        info!("Frame #{} on '{}': {}", count, track, payload);
     }
 }

@@ -7,12 +7,17 @@ use tokio::sync::RwLock;
 use tokio::time::{interval, Instant};
 use tracing::{debug, info, warn};
 
-use moq_lite::{GroupProducer, Track, TrackConsumer, TrackProducer};
+use moq_native::moq_net::{group as moq_group, track as moq_track, Timestamp};
+
+type GroupProducer = moq_group::Producer;
+type Track = moq_track::Info;
+type TrackConsumer = moq_track::Subscriber;
+type TrackProducer = moq_track::Producer;
 
 use crate::config::WrapperError;
 use crate::session::MoqSession;
 
-/// High-level wrapper for track management with automatic reconnection
+/// High-level wrapper for track publish/subscribe management.
 pub struct TrackManager {
     session: Arc<MoqSession>,
     tracks: Arc<RwLock<HashMap<String, TrackHandle>>>,
@@ -22,7 +27,7 @@ pub struct TrackManager {
 #[allow(dead_code)]
 pub struct TrackHandle {
     producer: Option<TrackProducer>,
-    consumer: Option<TrackConsumer>,
+    consumer_active: bool,
     track_info: Track,
     last_activity: Instant,
 }
@@ -55,18 +60,12 @@ impl TrackManager {
         track_name: &str,
     ) -> Result<TrackConsumer> {
         let broadcast = self.session.get_broadcast_consumer().await?;
-        let track_consumer = broadcast.subscribe_track(&Track {
-            name: track_name.to_string(),
-            priority: 0, // Priority doesn't matter for subscription
-        });
+        let track_consumer = broadcast.track(track_name)?.subscribe(None).await?;
 
         let handle = TrackHandle {
             producer: None,
-            consumer: Some(track_consumer.clone()),
-            track_info: Track {
-                name: track_name.to_string(),
-                priority: 0,
-            },
+            consumer_active: true,
+            track_info: Track::default(),
             last_activity: Instant::now(),
         };
 
@@ -152,15 +151,15 @@ impl StreamPublisher {
     /// Start a new group (typically for keyframes or logical boundaries)
     pub fn start_group(&mut self) -> Result<()> {
         // Close the current group if it exists
-        if let Some(group) = self.current_group.take() {
-            group.close();
+        if let Some(mut group) = self.current_group.take() {
+            let _ = group.finish();
         }
 
         // Create a new group
         let group = self
             .track_producer
             .create_group(self.sequence_number.into())
-            .ok_or_else(|| WrapperError::Session("Failed to create group".to_string()))?;
+            .map_err(|e| WrapperError::Session(format!("Failed to create group: {}", e)))?;
 
         self.current_group = Some(group);
         self.sequence_number += 1;
@@ -178,7 +177,7 @@ impl StreamPublisher {
             WrapperError::Session("No active group, call start_group() first".to_string())
         })?;
 
-        group.write_frame(data);
+        group.write_frame(Timestamp::now(), data)?;
         Ok(())
     }
 
@@ -197,8 +196,8 @@ impl StreamPublisher {
 
     /// Close the current group
     pub fn close_group(&mut self) {
-        if let Some(group) = self.current_group.take() {
-            group.close();
+        if let Some(mut group) = self.current_group.take() {
+            let _ = group.finish();
             debug!("Closed group");
         }
     }

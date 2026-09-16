@@ -16,8 +16,7 @@ categories = ["multimedia", "network-programming", "web-programming"]
 anyhow = { version = "1", features = ["backtrace"] }
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-moq-lite = { git = "https://github.com/kixelated/moq" }
-moq-native = { git = "https://github.com/kixelated/moq" }
+moq-native = "=0.19.18"
 tokio = { version = "1.47", features = ["full"] }
 tracing = "0.1"
 url = "2"

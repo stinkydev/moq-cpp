@@ -1,121 +1,197 @@
+use std::time::Duration;
+
+use anyhow::{bail, Context};
+use clap::{Parser, Subcommand};
+use moq_native::moq_net::{self, Origin};
 use url::Url;
 
-use anyhow::Context;
-use clap::Parser;
-
 mod clock;
-use moq_lite::*;
+
+const DEFAULT_RELAY: &str = "https://r2.moq.sesame-streams.com:4433";
+const DEFAULT_TRACK: &str = "clock";
 
 #[derive(Parser, Clone)]
 pub struct Config {
-	/// Connect to the given URL starting with https://
-	#[arg(long)]
-	pub url: Url,
+    /// Connect to the given URL starting with https://.
+    #[arg(long, default_value = DEFAULT_RELAY)]
+    pub url: Url,
 
-	/// The name of the broadcast to publish or subscribe to.
-	#[arg(long)]
-	pub broadcast: String,
+    /// Broadcast name, or room prefix when publishing multiple broadcasts.
+    #[arg(long, default_value = "clock-native")]
+    pub broadcast: String,
 
-	/// The MoQ client configuration.
-	#[command(flatten)]
-	pub client: moq_native::ClientConfig,
+    /// The MoQ client configuration.
+    #[command(flatten)]
+    pub client: moq_native::ClientConfig,
 
-	/// The name of the clock track.
-	#[arg(long, default_value = "seconds")]
-	pub track: String,
+    /// The name of the clock track.
+    #[arg(long, default_value = DEFAULT_TRACK)]
+    pub track: String,
 
-	/// The log configuration.
-	#[command(flatten)]
-	pub log: moq_native::Log,
+    /// The log configuration.
+    #[command(flatten)]
+    pub log: moq_native::Log,
 
-	/// Whether to publish the clock or consume it.
-	#[command(subcommand)]
-	pub role: Command,
+    /// Whether to publish the clock or consume it.
+    #[command(subcommand)]
+    pub role: Command,
 }
 
-#[derive(Parser, Clone)]
+#[derive(Subcommand, Clone)]
 pub enum Command {
-	Publish,
-	Subscribe,
+    /// Publish clock data.
+    Publish {
+        /// Number of publishers to start. Values greater than 1 publish under
+        /// `<broadcast>/publisher-N`.
+        #[arg(long, default_value_t = 1)]
+        publishers: usize,
+
+        /// Delay between clock frames for each publisher.
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+    },
+
+    /// Subscribe to clock data.
+    Subscribe {
+        /// Treat the broadcast argument as an announcement prefix.
+        #[arg(long)]
+        room: bool,
+
+        /// Override the room prefix used with `--room`.
+        #[arg(long)]
+        room_prefix: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-	let config = Config::parse();
-	config.log.init();
+    let config = Config::parse();
+    config.log.init()?;
 
-	let client = config.client.init()?;
+    let client = config.client.clone().init()?;
+    tracing::info!(url = %config.url, "connecting to server");
 
-	tracing::info!(url = ?config.url, "connecting to server");
+    match &config.role {
+        Command::Publish {
+            publishers,
+            interval_ms,
+        } => publish(config.clone(), client, *publishers, *interval_ms).await,
+        Command::Subscribe { room, room_prefix } => {
+            subscribe(config.clone(), client, *room, room_prefix.clone()).await
+        }
+    }
+}
 
-	let session = client.connect(config.url).await?;
+async fn publish(
+    config: Config,
+    client: moq_native::Client,
+    publishers: usize,
+    interval_ms: u64,
+) -> anyhow::Result<()> {
+    if publishers == 0 {
+        bail!("--publishers must be at least 1");
+    }
 
-	let track1 = Track {
-		name: "video".to_string(),
-		priority: 0,
-	};
+    let origin = Origin::random().produce();
+    let interval = Duration::from_millis(interval_ms.max(1));
+    let mut broadcasts = Vec::new();
+    let mut tasks = Vec::new();
 
-	let track2 = Track {
-		name: "audio".to_string(),
-		priority: 0,
-	};
+    for broadcast_name in publisher_broadcasts(&config.broadcast, publishers) {
+        let mut broadcast = origin
+            .create_broadcast(&broadcast_name, moq_net::broadcast::Route::announced())
+            .context("failed to create announced broadcast")?;
+        let track = broadcast.create_track(config.track.as_str(), None)?;
+        tasks.push(tokio::spawn(
+            clock::Publisher::new(broadcast_name.clone(), track, interval).run(),
+        ));
+        tracing::info!(broadcast = %broadcast_name, track = %config.track, "publishing");
+        broadcasts.push(broadcast);
+    }
 
-	match config.role {
-		Command::Publish => {
-			let mut broadcast = moq_lite::Broadcast::produce();
-			let track = broadcast.producer.create_track(track1);
-			let clock = clock::Publisher::new(track);
+    let session = client.with_publisher(&origin).connect(config.url).await?;
 
-			let origin = moq_lite::Origin::produce();
-			origin.producer.publish_broadcast(&config.broadcast, broadcast.consumer);
+    let closed = tokio::select! {
+        err = session.closed() => Some(err),
+        _ = tokio::signal::ctrl_c() => None,
+    };
 
-			let session = moq_lite::Session::connect(session, origin.consumer, None).await?;
+    for task in tasks {
+        task.abort();
+    }
+    for mut broadcast in broadcasts {
+        broadcast.finish();
+    }
 
-			tokio::select! {
-				res = session.closed() => res.map_err(Into::into),
-				_ = clock.run() => Ok(()),
-			}
-		}
-		Command::Subscribe => {
-			let origin = moq_lite::Origin::produce();
-			let session = moq_lite::Session::connect(session, None, Some(origin.producer)).await?;
+    if let Some(err) = closed {
+        Err(err.into())
+    } else {
+        Ok(())
+    }
+}
 
-			// NOTE: We could just call `session.consume_broadcast(&config.broadcast)` instead,
-			// However that won't work with IETF MoQ and the current OriginConsumer API the moment.
-			// So instead we do the cooler thing and loop while the broadcast is announced.
+async fn subscribe(
+    config: Config,
+    client: moq_native::Client,
+    room: bool,
+    room_prefix: Option<String>,
+) -> anyhow::Result<()> {
+    let prefix = if room {
+        room_prefix.unwrap_or_else(|| config.broadcast.clone())
+    } else {
+        config.broadcast.clone()
+    };
 
-			tracing::info!(broadcast = %config.broadcast, "waiting for broadcast to be online");
+    let origin = Origin::random().produce();
+    let path: moq_net::Path<'_> = prefix.as_str().into();
+    let scoped_origin = origin
+        .scope(&[path])
+        .context("not allowed to consume broadcast prefix")?;
+    let mut announcements = scoped_origin.consume().announced();
+    let session = client
+        .with_subscriber(scoped_origin.clone())
+        .connect(config.url)
+        .await?;
 
-			let path: moq_lite::Path<'_> = config.broadcast.into();
-			let mut origin = origin
-				.consumer
-				.consume_only(&[path])
-				.context("not allowed to consume broadcast")?;
+    tracing::info!(
+        prefix = %prefix,
+        exact = !room,
+        track = %config.track,
+        "waiting for announced broadcasts"
+    );
 
-			// The current subscriber if any, dropped after each announce.
-			let mut video: Option<clock::Subscriber> = None;
-			let mut audio: Option<clock::Subscriber> = None;
+    loop {
+        tokio::select! {
+            Some(update) = announcements.next() => {
+                let broadcast_path = update.path.to_string();
+                if !room && broadcast_path != config.broadcast {
+                    continue;
+                }
 
-			loop {
-				tokio::select! {
-					Some(announce) = origin.announced() => match announce {
-						(path, Some(broadcast)) => {
-							tracing::info!(broadcast = %path, "broadcast is online, subscribing to track");
-							let track = broadcast.subscribe_track(&track1);
-							video = Some(clock::Subscriber::new(track));
+                match update.broadcast {
+                    Some(broadcast) => {
+                        tracing::info!(broadcast = %broadcast_path, "broadcast online");
+                        let track = broadcast.track(&config.track)?.subscribe(None).await?;
+                        tokio::spawn(clock::Subscriber::new(broadcast_path, track).run());
+                    }
+                    None => {
+                        tracing::warn!(broadcast = %broadcast_path, "broadcast offline");
+                    }
+                }
+            }
+            res = session.closed() => return Err(res.into()),
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+        }
+    }
+}
 
-							let track = broadcast.subscribe_track(&track2);
-							audio = Some(clock::Subscriber::new(track));
-						}
-						(path, None) => {
-							tracing::warn!(broadcast = %path, "broadcast is offline, waiting...");
-						}
-					},
-					res = session.closed() => return res.context("session closed"),
-					// NOTE: This drops clock when a new announce arrives, canceling it.
-					Some(res) = async { Some(video.take()?.run().await) } => res.context("clock error")?,
-				}
-			}
-		}
-	}
+fn publisher_broadcasts(base: &str, publishers: usize) -> Vec<String> {
+    if publishers == 1 {
+        return vec![base.to_string()];
+    }
+
+    let prefix = base.trim_end_matches('/');
+    (1..=publishers)
+        .map(|index| format!("{prefix}/publisher-{index}"))
+        .collect()
 }

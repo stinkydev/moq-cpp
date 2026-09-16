@@ -120,7 +120,17 @@ namespace moq
     static std::unique_ptr<Session> CreateSubscriber(
         const std::string &url, const std::string &broadcast_name,
         const std::vector<TrackDefinition> &tracks,
-        CatalogType catalog_type = CatalogType::kNone);
+        CatalogType catalog_type = CatalogType::kNone,
+        bool subscribe_all_catalog_tracks = false);
+
+    /// Create a room subscriber session.
+    /// The room prefix is matched against announced broadcast paths; data
+    /// callbacks receive "broadcast_path/track_name" as the track name.
+    static std::unique_ptr<Session> CreateRoomSubscriber(
+        const std::string &url, const std::string &room_prefix,
+        const std::vector<TrackDefinition> &tracks,
+        CatalogType catalog_type = CatalogType::kNone,
+        bool subscribe_all_catalog_tracks = false);
 
     ~Session();
 
