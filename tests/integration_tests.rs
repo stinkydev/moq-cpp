@@ -34,6 +34,29 @@ async fn test_session_creation() {
     assert!(subscriber.is_ok());
 }
 
+/// Session setup must not block the runtime, so it works on a current-thread runtime.
+#[tokio::test(flavor = "current_thread")]
+async fn test_publisher_with_catalog_on_current_thread_runtime() {
+    let url = url::Url::parse("https://example.com/test").unwrap();
+    let config = SessionConfig::new("test-broadcast", url);
+
+    let publisher = MoqSession::publisher(
+        config,
+        "test-broadcast".to_string(),
+        CatalogType::Sesame,
+        vec![
+            TrackDefinition::video("video", 1),
+            TrackDefinition::audio("audio", 2),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let mut tracks = publisher.list_tracks().await;
+    tracks.sort();
+    assert_eq!(tracks, vec!["audio", "catalog.json", "video"]);
+}
+
 #[tokio::test]
 async fn test_room_subscriber_creation() {
     let url = url::Url::parse("https://example.com/test").unwrap();

@@ -7,14 +7,14 @@ use tracing::{info, Level};
 
 use crate::{
     close_session, create_publisher, create_room_subscriber_with_options,
-    create_subscriber_with_options, publish_data, set_data_callback, set_log_level, write_frame,
-    write_single_frame, CatalogType, MoqSession, TrackDefinition, TrackType,
+    create_subscriber_with_options, publish_data, set_data_callback, set_log_level, shared_runtime,
+    write_frame, write_single_frame, CatalogType, MoqSession, TrackDefinition, TrackType,
 };
 
 // Opaque handles for C API
 pub struct CMoqSession {
     session: Arc<MoqSession>,
-    runtime: Arc<Runtime>,
+    runtime: &'static Runtime,
     data_callback: Arc<RwLock<Option<CDataCallback>>>,
     broadcast_announced_callback: Arc<RwLock<Option<CBroadcastAnnouncedCallback>>>,
     broadcast_cancelled_callback: Arc<RwLock<Option<CBroadcastCancelledCallback>>>,
@@ -24,9 +24,9 @@ pub struct CMoqSession {
 // C-compatible struct for passing track definitions
 #[repr(C)]
 pub struct CTrackDefinitionFFI {
-    name: *const c_char,
-    priority: u32,
-    track_type: u8,
+    pub name: *const c_char,
+    pub priority: u32,
+    pub track_type: u8,
 }
 
 // Keep the old struct for backward compatibility
@@ -244,8 +244,8 @@ pub unsafe extern "C" fn moq_create_publisher(
         Vec::new()
     };
 
-    let runtime = match Runtime::new() {
-        Ok(rt) => Arc::new(rt),
+    let runtime = match shared_runtime() {
+        Ok(rt) => rt,
         Err(_) => return ptr::null_mut(),
     };
 
@@ -343,8 +343,8 @@ pub unsafe extern "C" fn moq_create_subscriber(
         Vec::new()
     };
 
-    let runtime = match Runtime::new() {
-        Ok(rt) => Arc::new(rt),
+    let runtime = match shared_runtime() {
+        Ok(rt) => rt,
         Err(_) => return ptr::null_mut(),
     };
 
@@ -434,8 +434,8 @@ pub unsafe extern "C" fn moq_create_room_subscriber(
         Vec::new()
     };
 
-    let runtime = match Runtime::new() {
-        Ok(rt) => Arc::new(rt),
+    let runtime = match shared_runtime() {
+        Ok(rt) => rt,
         Err(_) => return ptr::null_mut(),
     };
 
@@ -884,6 +884,9 @@ pub unsafe extern "C" fn moq_session_free(session: *mut CMoqSession) {
         if let Ok(mut cb) = session_ref.connection_closed_callback.write() {
             *cb = None;
         }
+
+        // Tasks on the shared runtime hold their own session clones, so stop them explicitly.
+        session_ref.session.request_shutdown();
 
         unsafe {
             drop(Box::from_raw(session));

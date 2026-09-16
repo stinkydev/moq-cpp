@@ -1,12 +1,14 @@
 pub mod catalog;
 pub mod config;
 pub mod ffi;
+pub mod runtime;
 pub mod session;
 pub mod subscription_manager;
 pub mod track;
 
 pub use catalog::{Catalog, CatalogType, HangCatalog, SesameCatalog, TrackDefinition, TrackType};
 pub use config::{ConnectionConfig, SessionConfig, WrapperError};
+pub use runtime::{shared_client, shared_runtime};
 pub use session::{
     ConnectionInfo, DataCallback, MoqSession, SessionEvent, SessionLogCallback, SessionType,
     SubscriptionMode,

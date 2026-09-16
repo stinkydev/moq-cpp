@@ -107,6 +107,11 @@ pub enum SessionEvent {
     Error { error: String },
 }
 
+/// Resolves once `true` is sent on the shutdown channel or its sender is gone.
+async fn shutdown_requested(rx: &mut watch::Receiver<bool>) {
+    let _ = rx.wait_for(|stop| *stop).await;
+}
+
 /// Callback function types for session events
 pub type BroadcastAnnouncedCallback = Box<dyn Fn(&str) + Send + Sync>;
 pub type BroadcastCancelledCallback = Box<dyn Fn(&str) + Send + Sync>;
@@ -307,9 +312,7 @@ impl MoqSession {
                 .context("Failed to parse IPv4 bind address")?;
         }
 
-        let client = client_config
-            .init()
-            .context("Failed to initialize MoQ client")?;
+        let client = crate::runtime::shared_client(&client_config)?;
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -324,7 +327,7 @@ impl MoqSession {
             broadcast_consumers: HashMap::new(),
         }));
 
-        let mut session = Self {
+        let session = Self {
             config,
             session_type: session_type.clone(),
             client,
@@ -354,14 +357,14 @@ impl MoqSession {
 
         // loop through tracks and add
         for track_def in tracks.iter() {
-            session.add_track_definition(track_def.clone())?;
+            session.add_track_definition(track_def.clone()).await?;
         }
 
         // Set catalog if needed (only for publishers)
         if matches!(session_type, SessionType::Publisher) && catalog_type != CatalogType::None {
             let catalog = Catalog::new(catalog_type.clone(), &tracks)
                 .ok_or_else(|| anyhow::anyhow!("Failed to create catalog"))?;
-            session.set_catalog(catalog)?;
+            session.set_catalog(catalog).await?;
         }
 
         Ok(session)
@@ -393,16 +396,25 @@ impl MoqSession {
                 return;
             }
 
-            let result = Self::establish_connection(
-                &config,
-                &client,
-                &session_type,
-                &broadcast_name,
-                state.clone(),
-                event_tx.clone(),
-                announcement_tx.clone(),
-            )
-            .await;
+            let result = tokio::select! {
+                result = Self::establish_connection(
+                    &config,
+                    &client,
+                    &session_type,
+                    &broadcast_name,
+                    state.clone(),
+                    event_tx.clone(),
+                    announcement_tx.clone(),
+                ) => result,
+                _ = shutdown_requested(&mut shutdown_rx) => {
+                    info!("Shutdown requested while connecting, stopping session");
+                    let mut state_guard = state.write().await;
+                    state_guard.connected = false;
+                    state_guard.current_session = None;
+                    state_guard.broadcast = None;
+                    return;
+                }
+            };
 
             match result {
                 Ok((session_handle, announcement_consumer)) => {
@@ -441,6 +453,7 @@ impl MoqSession {
                             broadcast_announced_cb.clone(),
                             broadcast_cancelled_cb.clone(),
                             session_clone.clone(), // Pass session reference for BroadcastSubscriptionManager management
+                            session_handle.session.clone(),
                         )
                         .await;
                     }
@@ -454,13 +467,9 @@ impl MoqSession {
                             error!("Session closed: {}", result);
                             format!("Session closed: {}", result)
                         }
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
-                                info!("Shutdown requested, closing session");
-                                "Shutdown requested".to_string()
-                            } else {
-                                "Unknown shutdown reason".to_string()
-                            }
+                        _ = shutdown_requested(&mut shutdown_rx) => {
+                            info!("Shutdown requested, closing session");
+                            "Shutdown requested".to_string()
                         }
                     };
 
@@ -616,9 +625,19 @@ impl MoqSession {
         broadcast_announced_cb: Arc<RwLock<Option<BroadcastAnnouncedCallback>>>,
         broadcast_cancelled_cb: Arc<RwLock<Option<BroadcastCancelledCallback>>>,
         session: MoqSession, // Add session reference to handle BroadcastSubscriptionManager lifecycle
+        moq_session: Arc<Session>,
     ) {
+        let mut shutdown_rx = session.shutdown_rx.clone();
         tokio::spawn(async move {
-            while let Some(update) = announcement_consumer.next().await {
+            loop {
+                let update = tokio::select! {
+                    update = announcement_consumer.next() => match update {
+                        Some(update) => update,
+                        None => break,
+                    },
+                    _ = shutdown_requested(&mut shutdown_rx) => break,
+                    _ = moq_session.closed() => break,
+                };
                 let path = update.path.to_string();
                 match update.broadcast {
                     Some(broadcast_consumer) => {
@@ -695,17 +714,17 @@ impl MoqSession {
     /// Stop the session and close all connections
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping MoQ session");
-
-        // Send shutdown signal
-        let _ = self.shutdown_tx.send(true);
-
-        // Close current session if connected
-        let state = self.state.read().await;
-        if let Some(_session_handle) = &state.current_session {
-            // Session handle will be dropped, which should close the connection.
-        }
-
+        self.request_shutdown();
         Ok(())
+    }
+
+    /// Signal every task spawned for this session to stop. Does not block.
+    pub fn request_shutdown(&self) {
+        self.shutdown_tx.send_replace(true);
+    }
+
+    pub(crate) fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+        self.shutdown_rx.clone()
     }
 
     /// Set callback for when a broadcast is announced as active
@@ -897,7 +916,12 @@ impl MoqSession {
                         .await;
                 }
 
-                // Store the new manager
+                // A shutdown that raced this creation has already drained the map.
+                if *self.shutdown_rx.borrow() {
+                    new_manager.stop().await;
+                    return Ok(());
+                }
+
                 self.broadcast_subscription_managers
                     .write()
                     .await
@@ -922,7 +946,7 @@ pub struct ConnectionInfo {
 /// Publisher-specific functionality
 impl MoqSession {
     /// Add a track definition to the session
-    pub fn add_track_definition(&mut self, track_def: TrackDefinition) -> Result<()> {
+    pub async fn add_track_definition(&self, track_def: TrackDefinition) -> Result<()> {
         let track_info =
             TrackInfo::default().with_priority(track_def.priority.try_into().unwrap_or(u8::MAX));
 
@@ -933,33 +957,27 @@ impl MoqSession {
         };
 
         // Store track for later creation when session connects
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                self.tracks
-                    .write()
-                    .await
-                    .insert(track_def.name.clone(), track_handle);
+        self.tracks
+            .write()
+            .await
+            .insert(track_def.name.clone(), track_handle);
 
-                // Generate random starting group sequence number for this track
-                let mut rng = rand::thread_rng();
-                let random_start: u64 = rng.gen_range(1..=10000);
+        // Random starting group sequence number for this track
+        let random_start: u64 = rand::thread_rng().gen_range(1..=10000);
 
-                self.sequence_numbers
-                    .write()
-                    .await
-                    .insert(track_def.name.clone(), random_start);
+        self.sequence_numbers
+            .write()
+            .await
+            .insert(track_def.name.clone(), random_start);
 
-                debug!(
-                    "Track '{}' initialized with random starting group sequence: {}",
-                    track_def.name, random_start
-                );
+        debug!(
+            "Track '{}' initialized with random starting group sequence: {}",
+            track_def.name, random_start
+        );
 
-                // Add to requested tracks if subscriber
-                if matches!(self.session_type, SessionType::Subscriber) {
-                    self.requested_tracks.write().await.push(track_def.clone());
-                }
-            })
-        });
+        if matches!(self.session_type, SessionType::Subscriber) {
+            self.requested_tracks.write().await.push(track_def.clone());
+        }
 
         debug!(
             "Added track definition: {} ({})",
@@ -969,34 +987,26 @@ impl MoqSession {
     }
 
     /// Set catalog for publisher
-    pub fn set_catalog(&mut self, catalog: Catalog) -> Result<()> {
+    pub async fn set_catalog(&self, catalog: Catalog) -> Result<()> {
         if !matches!(self.session_type, SessionType::Publisher) {
             return Err(
                 WrapperError::Session("Only publishers can set catalog".to_string()).into(),
             );
         }
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                *self.catalog.write().await = Some(catalog);
-            })
-        });
+        *self.catalog.write().await = Some(catalog);
 
         // Add catalog.json track
         let catalog_track = TrackDefinition::data("catalog.json", u32::MAX); // Highest priority
-        self.add_track_definition(catalog_track)?;
+        self.add_track_definition(catalog_track).await?;
 
         debug!("Set catalog for publisher");
         Ok(())
     }
 
     /// Set catalog type for subscriber
-    pub fn set_catalog_type(&mut self, catalog_type: CatalogType) -> Result<()> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                *self.catalog_type.write().await = catalog_type.clone();
-            })
-        });
+    pub async fn set_catalog_type(&self, catalog_type: CatalogType) -> Result<()> {
+        *self.catalog_type.write().await = catalog_type.clone();
 
         debug!("Set catalog type: {:?}", catalog_type);
         Ok(())
@@ -1289,10 +1299,7 @@ impl MoqSession {
     pub async fn close_session(&self) -> Result<()> {
         debug!("Closing MoQ session");
 
-        // Send shutdown signal
-        if let Err(e) = self.shutdown_tx.send(true) {
-            warn!("Failed to send shutdown signal: {}", e);
-        }
+        self.request_shutdown();
 
         // Clear session state
         {

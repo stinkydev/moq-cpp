@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
@@ -35,6 +35,7 @@ pub struct BroadcastSubscriptionManager {
     // State tracking
     is_active: Arc<RwLock<bool>>,
     catalog_subscribed: Arc<RwLock<bool>>,
+    stop_tx: watch::Sender<bool>,
 }
 
 struct CatalogSubscriptionContext {
@@ -45,6 +46,23 @@ struct CatalogSubscriptionContext {
     active_tracks: Arc<RwLock<HashSet<String>>>,
     track_data_callback: Arc<RwLock<Option<TrackDataCallback>>>,
     is_active: Arc<RwLock<bool>>,
+    stop: StopSignal,
+}
+
+/// Resolves once the manager is stopped or dropped, or its session shuts down.
+#[derive(Clone)]
+struct StopSignal {
+    manager: watch::Receiver<bool>,
+    session: watch::Receiver<bool>,
+}
+
+impl StopSignal {
+    async fn stopped(mut self) {
+        tokio::select! {
+            _ = async { let _ = self.manager.wait_for(|stop| *stop).await; } => {}
+            _ = async { let _ = self.session.wait_for(|stop| *stop).await; } => {}
+        }
+    }
 }
 
 impl BroadcastSubscriptionManager {
@@ -57,6 +75,7 @@ impl BroadcastSubscriptionManager {
         subscribe_all_catalog_tracks: bool,
     ) -> Result<Self> {
         let (catalog_update_tx, _) = broadcast::channel(10);
+        let (stop_tx, _) = watch::channel(false);
 
         let manager = Self {
             session: session.clone(),
@@ -71,6 +90,7 @@ impl BroadcastSubscriptionManager {
             track_data_callback: Arc::new(RwLock::new(None)),
             is_active: Arc::new(RwLock::new(false)),
             catalog_subscribed: Arc::new(RwLock::new(false)),
+            stop_tx,
         };
 
         // Start the subscription management flow
@@ -125,6 +145,10 @@ impl BroadcastSubscriptionManager {
         let track_data_callback = self.track_data_callback.clone();
         let is_active = self.is_active.clone();
         let catalog_subscribed = self.catalog_subscribed.clone();
+        let stop = StopSignal {
+            manager: self.stop_tx.subscribe(),
+            session: session.shutdown_receiver(),
+        };
 
         tokio::spawn(async move {
             info!(
@@ -147,6 +171,7 @@ impl BroadcastSubscriptionManager {
                         active_tracks: active_tracks.clone(),
                         track_data_callback: track_data_callback.clone(),
                         is_active: is_active.clone(),
+                        stop: stop.clone(),
                     };
                     Self::manage_catalog_subscription(&session, &broadcast_name, catalog_context)
                         .await;
@@ -163,6 +188,7 @@ impl BroadcastSubscriptionManager {
                 active_tracks.clone(),
                 track_data_callback.clone(),
                 is_active.clone(),
+                stop,
             )
             .await;
         });
@@ -180,10 +206,11 @@ impl BroadcastSubscriptionManager {
         );
 
         // Subscribe to catalog.json - only once
-        match session
-            .subscribe_track_internal(broadcast_name, "catalog.json")
-            .await
-        {
+        let subscribed = tokio::select! {
+            result = session.subscribe_track_internal(broadcast_name, "catalog.json") => result,
+            _ = context.stop.clone().stopped() => return,
+        };
+        match subscribed {
             Ok(mut track_consumer) => {
                 let session = session.clone();
                 let broadcast_name = broadcast_name.to_string();
@@ -195,61 +222,71 @@ impl BroadcastSubscriptionManager {
                     active_tracks,
                     track_data_callback,
                     is_active,
+                    stop,
                 } = context;
 
                 // Monitor catalog for updates
+                let stopped = stop.clone().stopped();
                 tokio::spawn(async move {
-                    while *is_active.read().await {
-                        let mut group = match track_consumer.next_group().await {
-                            Ok(Some(group)) => group,
-                            Ok(None) => break,
-                            Err(e) => {
-                                warn!(
+                    let monitor = async {
+                        while *is_active.read().await {
+                            let mut group = match track_consumer.next_group().await {
+                                Ok(Some(group)) => group,
+                                Ok(None) => break,
+                                Err(e) => {
+                                    warn!(
                                     "[BroadcastSubscriptionManager] Catalog track error for broadcast {}: {}",
                                     broadcast_name, e
                                 );
-                                break;
-                            }
-                        };
-
-                        if let Ok(Some(frame)) = group.read_frame().await {
-                            let catalog_json = String::from_utf8_lossy(&frame.payload).to_string();
-                            debug!(
-                                "[BroadcastSubscriptionManager] 📋 Catalog updated ({} bytes)",
-                                catalog_json.len()
-                            );
-
-                            // Parse and store the catalog
-                            match Catalog::parse(&catalog_type, &catalog_json) {
-                                Ok(Some(catalog)) => {
-                                    let catalog_tracks = catalog.track_definitions();
-                                    *current_catalog.write().await = Some(catalog);
-
-                                    if subscribe_all_catalog_tracks {
-                                        Self::manage_track_subscriptions(
-                                            &session,
-                                            &broadcast_name,
-                                            &catalog_tracks,
-                                            active_tracks.clone(),
-                                            track_data_callback.clone(),
-                                            is_active.clone(),
-                                        )
-                                        .await;
-                                    }
+                                    break;
                                 }
-                                Ok(None) => {
-                                    debug!(
+                            };
+
+                            if let Ok(Some(frame)) = group.read_frame().await {
+                                let catalog_json =
+                                    String::from_utf8_lossy(&frame.payload).to_string();
+                                debug!(
+                                    "[BroadcastSubscriptionManager] 📋 Catalog updated ({} bytes)",
+                                    catalog_json.len()
+                                );
+
+                                // Parse and store the catalog
+                                match Catalog::parse(&catalog_type, &catalog_json) {
+                                    Ok(Some(catalog)) => {
+                                        let catalog_tracks = catalog.track_definitions();
+                                        *current_catalog.write().await = Some(catalog);
+
+                                        if subscribe_all_catalog_tracks {
+                                            Self::manage_track_subscriptions(
+                                                &session,
+                                                &broadcast_name,
+                                                &catalog_tracks,
+                                                active_tracks.clone(),
+                                                track_data_callback.clone(),
+                                                is_active.clone(),
+                                                stop.clone(),
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        debug!(
                                         "[BroadcastSubscriptionManager] Catalog parsing skipped for CatalogType::None"
                                     );
+                                    }
+                                    Err(e) => {
+                                        warn!("[BroadcastSubscriptionManager] ⚠️ Failed to parse catalog: {}", e);
+                                    }
                                 }
-                                Err(e) => {
-                                    warn!("[BroadcastSubscriptionManager] ⚠️ Failed to parse catalog: {}", e);
-                                }
-                            }
 
-                            // Broadcast catalog update
-                            if let Err(_e) = catalog_update_tx.send(catalog_json) {}
+                                // Broadcast catalog update
+                                if let Err(_e) = catalog_update_tx.send(catalog_json) {}
+                            }
                         }
+                    };
+                    tokio::select! {
+                        _ = monitor => {}
+                        _ = stopped => {}
                     }
                 });
             }
@@ -270,6 +307,7 @@ impl BroadcastSubscriptionManager {
         active_tracks: Arc<RwLock<HashSet<String>>>,
         track_data_callback: Arc<RwLock<Option<TrackDataCallback>>>,
         is_active: Arc<RwLock<bool>>,
+        stop: StopSignal,
     ) {
         info!(
             "[BroadcastSubscriptionManager] Subscribing to {} tracks",
@@ -302,55 +340,67 @@ impl BroadcastSubscriptionManager {
             let active_tracks_clone = active_tracks.clone();
             let callback_clone = track_data_callback.clone();
             let is_active_clone = is_active.clone();
+            let stopped = stop.clone().stopped();
 
             tokio::spawn(async move {
-                // Subscribe to the track
-                match session_clone
-                    .subscribe_track_internal(&broadcast_name_clone, &track_name)
-                    .await
-                {
-                    Ok(mut track_consumer) => {
-                        while *is_active_clone.read().await {
-                            match track_consumer.next_group().await {
-                                Ok(Some(mut group)) => {
-                                    while let Ok(Some(frame)) = group.read_frame().await {
-                                        // Call the data callback if set
-                                        let callback_guard = callback_clone.read().await;
-                                        if let Some(callback) = callback_guard.as_ref() {
-                                            callback(track_name.clone(), frame.payload.to_vec());
+                let subscription = async {
+                    // Subscribe to the track
+                    match session_clone
+                        .subscribe_track_internal(&broadcast_name_clone, &track_name)
+                        .await
+                    {
+                        Ok(mut track_consumer) => {
+                            while *is_active_clone.read().await {
+                                match track_consumer.next_group().await {
+                                    Ok(Some(mut group)) => {
+                                        while let Ok(Some(frame)) = group.read_frame().await {
+                                            // Call the data callback if set
+                                            let callback_guard = callback_clone.read().await;
+                                            if let Some(callback) = callback_guard.as_ref() {
+                                                callback(
+                                                    track_name.clone(),
+                                                    frame.payload.to_vec(),
+                                                );
+                                            }
                                         }
                                     }
-                                }
-                                Ok(None) => {
-                                    info!(
+                                    Ok(None) => {
+                                        info!(
                                         "[BroadcastSubscriptionManager] Track '{}' stream ended (no more groups)",
                                         track_name
                                     );
-                                    break;
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "[BroadcastSubscriptionManager] Track '{}' error: {}",
-                                        track_name, e
-                                    );
-                                    break;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "[BroadcastSubscriptionManager] Track '{}' error: {}",
+                                            track_name, e
+                                        );
+                                        break;
+                                    }
                                 }
                             }
-                        }
 
-                        // Remove from active consumers
-                        active_tracks_clone.write().await.remove(&track_name);
-                        info!(
-                            "[BroadcastSubscriptionManager] Track '{}' subscription ended",
-                            track_name
-                        );
-                    }
-                    Err(e) => {
-                        active_tracks_clone.write().await.remove(&track_name);
-                        warn!(
+                            // Remove from active consumers
+                            active_tracks_clone.write().await.remove(&track_name);
+                            info!(
+                                "[BroadcastSubscriptionManager] Track '{}' subscription ended",
+                                track_name
+                            );
+                        }
+                        Err(e) => {
+                            active_tracks_clone.write().await.remove(&track_name);
+                            warn!(
                             "[BroadcastSubscriptionManager] Failed to subscribe to track '{}': {}",
                             track_name, e
                         );
+                        }
+                    }
+                };
+                tokio::select! {
+                    _ = subscription => {}
+                    _ = stopped => {
+                        active_tracks_clone.write().await.remove(&track_name);
                     }
                 }
             });
@@ -377,6 +427,7 @@ impl BroadcastSubscriptionManager {
             self.broadcast_name
         );
 
+        self.stop_tx.send_replace(true);
         *self.is_active.write().await = false;
         *self.catalog_subscribed.write().await = false;
         *self.catalog_consumer.write().await = None;
