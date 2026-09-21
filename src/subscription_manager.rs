@@ -2,7 +2,8 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, watch, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
+use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
@@ -36,6 +37,17 @@ pub struct BroadcastSubscriptionManager {
     is_active: Arc<RwLock<bool>>,
     catalog_subscribed: Arc<RwLock<bool>>,
     stop_tx: watch::Sender<bool>,
+    tasks: TaskSet,
+}
+
+/// Shared state handed to every track reader task.
+#[derive(Clone)]
+struct TrackSubscriptionContext {
+    active_tracks: Arc<RwLock<HashSet<String>>>,
+    track_data_callback: Arc<RwLock<Option<TrackDataCallback>>>,
+    is_active: Arc<RwLock<bool>>,
+    stop: StopSignal,
+    tasks: TaskSet,
 }
 
 struct CatalogSubscriptionContext {
@@ -43,10 +55,36 @@ struct CatalogSubscriptionContext {
     subscribe_all_catalog_tracks: bool,
     current_catalog: Arc<RwLock<Option<Catalog>>>,
     catalog_update_tx: broadcast::Sender<String>,
-    active_tracks: Arc<RwLock<HashSet<String>>>,
-    track_data_callback: Arc<RwLock<Option<TrackDataCallback>>>,
-    is_active: Arc<RwLock<bool>>,
-    stop: StopSignal,
+    tracks: TrackSubscriptionContext,
+}
+
+/// Every task the manager spawns (subscription flow, catalog monitor, per-track
+/// readers) is tracked here so `stop()` can abort and join all of them. Once
+/// shut down, further spawn requests are dropped instead of leaking a task.
+#[derive(Clone)]
+struct TaskSet(Arc<Mutex<Option<JoinSet<()>>>>);
+
+impl TaskSet {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Some(JoinSet::new()))))
+    }
+
+    async fn spawn<F>(&self, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        if let Some(set) = self.0.lock().await.as_mut() {
+            set.spawn(future);
+        }
+    }
+
+    /// Abort every tracked task and wait until each one has fully terminated.
+    async fn shutdown(&self) {
+        let set = self.0.lock().await.take();
+        if let Some(mut set) = set {
+            set.shutdown().await;
+        }
+    }
 }
 
 /// Resolves once the manager is stopped or dropped, or its session shuts down.
@@ -91,6 +129,7 @@ impl BroadcastSubscriptionManager {
             is_active: Arc::new(RwLock::new(false)),
             catalog_subscribed: Arc::new(RwLock::new(false)),
             stop_tx,
+            tasks: TaskSet::new(),
         };
 
         // Start the subscription management flow
@@ -139,23 +178,27 @@ impl BroadcastSubscriptionManager {
         let catalog_type = self.catalog_type.clone();
         let requested_tracks = self.requested_tracks.clone();
         let subscribe_all_catalog_tracks = self.subscribe_all_catalog_tracks;
-        let active_tracks = self.active_tracks.clone();
         let current_catalog = self.current_catalog.clone();
         let catalog_update_tx = self.catalog_update_tx.clone();
-        let track_data_callback = self.track_data_callback.clone();
-        let is_active = self.is_active.clone();
         let catalog_subscribed = self.catalog_subscribed.clone();
         let stop = StopSignal {
             manager: self.stop_tx.subscribe(),
             session: session.shutdown_receiver(),
         };
+        let tracks = TrackSubscriptionContext {
+            active_tracks: self.active_tracks.clone(),
+            track_data_callback: self.track_data_callback.clone(),
+            is_active: self.is_active.clone(),
+            stop,
+            tasks: self.tasks.clone(),
+        };
 
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             info!(
                 "[BroadcastSubscriptionManager] Starting subscription flow for broadcast: {}",
                 broadcast_name
             );
-            *is_active.write().await = true;
+            *tracks.is_active.write().await = true;
 
             // Step 1: Subscribe to catalog if needed (broadcast is already announced and subscribed by session)
             if catalog_type != CatalogType::None {
@@ -168,10 +211,7 @@ impl BroadcastSubscriptionManager {
                         subscribe_all_catalog_tracks,
                         current_catalog: current_catalog.clone(),
                         catalog_update_tx: catalog_update_tx.clone(),
-                        active_tracks: active_tracks.clone(),
-                        track_data_callback: track_data_callback.clone(),
-                        is_active: is_active.clone(),
-                        stop: stop.clone(),
+                        tracks: tracks.clone(),
                     };
                     Self::manage_catalog_subscription(&session, &broadcast_name, catalog_context)
                         .await;
@@ -181,17 +221,10 @@ impl BroadcastSubscriptionManager {
             }
 
             // Step 2: Subscribe to all requested tracks
-            Self::manage_track_subscriptions(
-                &session,
-                &broadcast_name,
-                &requested_tracks,
-                active_tracks.clone(),
-                track_data_callback.clone(),
-                is_active.clone(),
-                stop,
-            )
-            .await;
-        });
+            Self::manage_track_subscriptions(&session, &broadcast_name, &requested_tracks, &tracks)
+                .await;
+        })
+        .await;
     }
 
     /// Manage catalog subscription and updates
@@ -208,7 +241,7 @@ impl BroadcastSubscriptionManager {
         // Subscribe to catalog.json - only once
         let subscribed = tokio::select! {
             result = session.subscribe_track_internal(broadcast_name, "catalog.json") => result,
-            _ = context.stop.clone().stopped() => return,
+            _ = context.tracks.stop.clone().stopped() => return,
         };
         match subscribed {
             Ok(mut track_consumer) => {
@@ -219,17 +252,15 @@ impl BroadcastSubscriptionManager {
                     subscribe_all_catalog_tracks,
                     current_catalog,
                     catalog_update_tx,
-                    active_tracks,
-                    track_data_callback,
-                    is_active,
-                    stop,
+                    tracks,
                 } = context;
 
                 // Monitor catalog for updates
-                let stopped = stop.clone().stopped();
-                tokio::spawn(async move {
+                let stopped = tracks.stop.clone().stopped();
+                let tasks = tracks.tasks.clone();
+                tasks.spawn(async move {
                     let monitor = async {
-                        while *is_active.read().await {
+                        while *tracks.is_active.read().await {
                             let mut group = match track_consumer.next_group().await {
                                 Ok(Some(group)) => group,
                                 Ok(None) => break,
@@ -261,10 +292,7 @@ impl BroadcastSubscriptionManager {
                                                 &session,
                                                 &broadcast_name,
                                                 &catalog_tracks,
-                                                active_tracks.clone(),
-                                                track_data_callback.clone(),
-                                                is_active.clone(),
-                                                stop.clone(),
+                                                &tracks,
                                             )
                                             .await;
                                         }
@@ -288,7 +316,8 @@ impl BroadcastSubscriptionManager {
                         _ = monitor => {}
                         _ = stopped => {}
                     }
-                });
+                })
+                .await;
             }
             Err(e) => {
                 warn!(
@@ -304,10 +333,7 @@ impl BroadcastSubscriptionManager {
         session: &MoqSession,
         broadcast_name: &str,
         requested_tracks: &[TrackDefinition],
-        active_tracks: Arc<RwLock<HashSet<String>>>,
-        track_data_callback: Arc<RwLock<Option<TrackDataCallback>>>,
-        is_active: Arc<RwLock<bool>>,
-        stop: StopSignal,
+        context: &TrackSubscriptionContext,
     ) {
         info!(
             "[BroadcastSubscriptionManager] Subscribing to {} tracks",
@@ -325,7 +351,7 @@ impl BroadcastSubscriptionManager {
             }
 
             {
-                let mut active_guard = active_tracks.write().await;
+                let mut active_guard = context.active_tracks.write().await;
                 if !active_guard.insert(track_name.clone()) {
                     debug!(
                         "[BroadcastSubscriptionManager] Track '{}' already subscribed or pending",
@@ -337,12 +363,12 @@ impl BroadcastSubscriptionManager {
 
             let session_clone = session.clone();
             let broadcast_name_clone = broadcast_name.to_string();
-            let active_tracks_clone = active_tracks.clone();
-            let callback_clone = track_data_callback.clone();
-            let is_active_clone = is_active.clone();
-            let stopped = stop.clone().stopped();
+            let active_tracks_clone = context.active_tracks.clone();
+            let callback_clone = context.track_data_callback.clone();
+            let is_active_clone = context.is_active.clone();
+            let stopped = context.stop.clone().stopped();
 
-            tokio::spawn(async move {
+            context.tasks.spawn(async move {
                 let subscription = async {
                     // Subscribe to the track
                     match session_clone
@@ -403,7 +429,8 @@ impl BroadcastSubscriptionManager {
                         active_tracks_clone.write().await.remove(&track_name);
                     }
                 }
-            });
+            })
+            .await;
 
             // Small delay between track subscriptions
             sleep(Duration::from_millis(100)).await;
@@ -429,6 +456,11 @@ impl BroadcastSubscriptionManager {
 
         self.stop_tx.send_replace(true);
         *self.is_active.write().await = false;
+
+        // Abort and join every spawned task. After this returns no track reader
+        // can still be inside the data callback, so callers may safely report
+        // the broadcast as cancelled.
+        self.tasks.shutdown().await;
         *self.catalog_subscribed.write().await = false;
         *self.catalog_consumer.write().await = None;
         self.active_tracks.write().await.clear();

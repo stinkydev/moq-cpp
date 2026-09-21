@@ -646,6 +646,16 @@ impl MoqSession {
                         // Also send to internal broadcast channel for BroadcastSubscriptionManager
                         let _ = announcement_tx.send(path.clone());
 
+                        // Call the broadcast announced callback before any subscription
+                        // manager is started, so the announce is guaranteed to be observed
+                        // before the first media frame from this broadcast is delivered.
+                        {
+                            let callback_guard = broadcast_announced_cb.read().await;
+                            if let Some(callback) = callback_guard.as_ref() {
+                                callback(&path);
+                            }
+                        }
+
                         // Handle announcements for exact broadcasts or room prefixes.
                         if session.should_subscribe_to_announcement(&path) {
                             session
@@ -656,18 +666,14 @@ impl MoqSession {
                                 .insert(path.clone(), broadcast_consumer);
                             let _ = session.create_or_recreate_manager_for(path.clone()).await;
                         }
-
-                        // Call the broadcast announced callback if set
-                        let callback_guard = broadcast_announced_cb.read().await;
-                        if let Some(callback) = callback_guard.as_ref() {
-                            callback(&path);
-                        }
                     }
                     None => {
                         debug!("Broadcast unannounced: {}", path);
                         let _ = event_tx
                             .send(SessionEvent::BroadcastUnannounced { path: path.clone() });
 
+                        // Stop and join the subscription manager first so no track task can
+                        // deliver a frame after the cancelled callback has fired.
                         session.remove_subscription_manager(&path).await;
 
                         // Call the broadcast cancelled callback if set

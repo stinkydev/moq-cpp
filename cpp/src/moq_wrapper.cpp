@@ -6,6 +6,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 
 // C-compatible track definition structure
 struct TrackDefinitionFFI
@@ -41,8 +42,8 @@ extern "C"
   int moq_close_session(void *session);
   void moq_session_free(void *session);
   int moq_session_set_log_callback(void *session, void (*callback)(const char *, int, const char *));
-  int moq_session_set_broadcast_announced_callback(void *session, void (*callback)(const char *));
-  int moq_session_set_broadcast_cancelled_callback(void *session, void (*callback)(const char *));
+  int moq_session_set_broadcast_announced_callback(void *session, void (*callback)(void *, const char *));
+  int moq_session_set_broadcast_cancelled_callback(void *session, void (*callback)(void *, const char *));
   int moq_session_set_connection_closed_callback(void *session, void (*callback)(void *, const char *));
 }
 
@@ -59,12 +60,6 @@ namespace moq
     std::unordered_map<void *, Session *> g_session_map;
     std::mutex g_session_map_mutex;
 
-    // Global callback instances (set per session)
-    Session *g_current_session = nullptr;
-    BroadcastAnnouncedCallback *g_broadcast_announced_callback = nullptr;
-    BroadcastCancelledCallback *g_broadcast_cancelled_callback = nullptr;
-    ConnectionClosedCallback *g_connection_closed_callback = nullptr;
-
     // Thread-safe C wrapper for log callback
     extern "C" void LogCallbackWrapper(const char *target, int level,
                                        const char *message)
@@ -77,70 +72,127 @@ namespace moq
       }
     }
 
-    // C wrapper for data callback
-    extern "C" void DataCallbackWrapper(const char *track, const uint8_t *data,
-                                        size_t size)
-    {
-      // This will be set up per session in SetDataCallback
-      // Suppress unused parameter warnings
-      (void)track;
-      (void)data;
-      (void)size;
-    }
-
   } // namespace
 
-  // C wrapper functions for new callbacks - outside anonymous namespace to access globals
-  extern "C" void SessionBroadcastAnnouncedWrapper(const char *path)
+  namespace
   {
-    std::lock_guard<std::mutex> lock(g_session_map_mutex);
-    if (g_current_session && g_current_session->broadcast_announced_callback_)
+    // A Session looked up from the FFI handle, together with the held session
+    // map lock. While the lock is held the Session cannot be destroyed.
+    struct LockedSession
     {
-      (*g_current_session->broadcast_announced_callback_)(std::string(path));
+      std::unique_lock<std::mutex> lock;
+      Session *session = nullptr;
+    };
+
+    LockedSession FindSession(void *ffi_session_ptr)
+    {
+      LockedSession result;
+      if (!ffi_session_ptr)
+      {
+        return result;
+      }
+
+      result.lock = std::unique_lock<std::mutex>(g_session_map_mutex);
+      auto it = g_session_map.find(ffi_session_ptr);
+      if (it != g_session_map.end())
+      {
+        result.session = it->second;
+      }
+      return result;
     }
+
+    // Copy a callback out of its storage under the session's callback mutex.
+    // The copy owns its captures, so it stays valid after the Session is gone.
+    template <typename Callback>
+    Callback CopyCallback(std::mutex &callback_mutex, const std::unique_ptr<Callback> &callback)
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      return callback ? *callback : Callback();
+    }
+
+    template <typename Callback, typename... Args>
+    void InvokeCallback(const char *name, const Callback &callback, Args &&...args)
+    {
+      if (!callback)
+      {
+        return;
+      }
+
+      try
+      {
+        callback(std::forward<Args>(args)...);
+      }
+      catch (const std::exception &e)
+      {
+        std::cerr << "Exception in " << name << " callback: " << e.what() << std::endl;
+      }
+      catch (...)
+      {
+        std::cerr << "Unknown exception in " << name << " callback" << std::endl;
+      }
+    }
+  } // namespace
+
+  // C wrapper functions for session callbacks - outside anonymous namespace to
+  // access Session private members via friendship. Each one resolves the Session
+  // from the FFI pointer supplied by Rust, copies the callback while the session
+  // is pinned by the map lock, and invokes the copy with no locks held so that
+  // callbacks may freely create or destroy sessions.
+  extern "C" void SessionBroadcastAnnouncedWrapper(void *ffi_session_ptr, const char *path)
+  {
+    BroadcastAnnouncedCallback callback;
+    {
+      auto locked = FindSession(ffi_session_ptr);
+      if (locked.session)
+      {
+        callback = CopyCallback(locked.session->callback_mutex_,
+                                locked.session->broadcast_announced_callback_);
+      }
+    }
+    InvokeCallback("broadcast announced", callback, std::string(path));
   }
 
-  extern "C" void SessionBroadcastCancelledWrapper(const char *path)
+  extern "C" void SessionBroadcastCancelledWrapper(void *ffi_session_ptr, const char *path)
   {
-    std::lock_guard<std::mutex> lock(g_session_map_mutex);
-    if (g_current_session && g_current_session->broadcast_cancelled_callback_)
+    BroadcastCancelledCallback callback;
     {
-      (*g_current_session->broadcast_cancelled_callback_)(std::string(path));
+      auto locked = FindSession(ffi_session_ptr);
+      if (locked.session)
+      {
+        callback = CopyCallback(locked.session->callback_mutex_,
+                                locked.session->broadcast_cancelled_callback_);
+      }
     }
+    InvokeCallback("broadcast cancelled", callback, std::string(path));
   }
 
   extern "C" void SessionConnectionClosedWrapper(void *ffi_session_ptr, const char *reason)
   {
-    if (!ffi_session_ptr)
-      return;
-
-    Session *session = nullptr;
+    ConnectionClosedCallback callback;
     {
-      std::lock_guard<std::mutex> lock(g_session_map_mutex);
-      auto it = g_session_map.find(ffi_session_ptr);
-      if (it != g_session_map.end())
+      auto locked = FindSession(ffi_session_ptr);
+      if (locked.session)
       {
-        session = it->second;
+        callback = CopyCallback(locked.session->callback_mutex_,
+                                locked.session->connection_closed_callback_);
       }
     }
+    InvokeCallback("connection closed", callback, std::string(reason));
+  }
 
-    if (session && session->connection_closed_callback_)
+  extern "C" void SessionDataCallbackWrapper(void *ffi_session_ptr, const char *track, const uint8_t *data, size_t size)
+  {
+    DataCallback callback;
     {
-      try
+      auto locked = FindSession(ffi_session_ptr);
+      if (locked.session)
       {
-        (*session->connection_closed_callback_)(std::string(reason));
-      }
-      catch (const std::exception &e)
-      {
-        std::cerr << "Exception in connection closed callback: " << e.what() << std::endl;
-      }
-      catch (...)
-      {
-        std::cerr << "Unknown exception in connection closed callback" << std::endl;
+        callback = CopyCallback(locked.session->callback_mutex_,
+                                locked.session->data_callback_);
       }
     }
-
-  } // namespace
+    InvokeCallback("data", callback, std::string(track), data, size);
+  }
 
   TrackDefinition::TrackDefinition(const std::string &name, uint32_t priority,
                                    TrackType track_type)
@@ -333,9 +385,6 @@ namespace moq
     // Register this session instance with the handle
     std::lock_guard<std::mutex> lock(g_session_map_mutex);
     g_session_map[handle_] = this;
-
-    // Set this as the current session for callback routing
-    g_current_session = this;
   }
 
   Session::~Session()
@@ -351,16 +400,10 @@ namespace moq
         connection_closed_callback_.reset();
       }
 
-      // Unregister from session map and clear global pointer if it's this session
+      // Unregister from session map so no further callbacks resolve to this session
       {
         std::lock_guard<std::mutex> lock(g_session_map_mutex);
         g_session_map.erase(handle_);
-
-        // Clear global session pointer if it points to this session
-        if (g_current_session == this)
-        {
-          g_current_session = nullptr;
-        }
       }
 
       // Close the session first to ensure proper cleanup
@@ -371,39 +414,6 @@ namespace moq
 
       // Free the session
       moq_session_free(handle_);
-    }
-  }
-
-  // Session-specific data callback wrapper
-  extern "C" void SessionDataCallbackWrapper(void *ffi_session_ptr, const char *track, const uint8_t *data, size_t size)
-  {
-    if (!ffi_session_ptr)
-      return;
-
-    Session *session = nullptr;
-    {
-      std::lock_guard<std::mutex> lock(g_session_map_mutex);
-      auto it = g_session_map.find(ffi_session_ptr);
-      if (it != g_session_map.end())
-      {
-        session = it->second;
-      }
-    }
-
-    if (session && session->data_callback_)
-    {
-      try
-      {
-        (*session->data_callback_)(std::string(track), data, size);
-      }
-      catch (const std::exception &e)
-      {
-        std::cerr << "Exception in data callback: " << e.what() << std::endl;
-      }
-      catch (...)
-      {
-        std::cerr << "Unknown exception in data callback" << std::endl;
-      }
     }
   }
 

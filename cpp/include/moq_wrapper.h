@@ -97,16 +97,16 @@ namespace moq
 
   /// Forward declarations for friend functions
   extern "C" void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
-  extern "C" void SessionBroadcastAnnouncedWrapper(const char *);
-  extern "C" void SessionBroadcastCancelledWrapper(const char *);
+  extern "C" void SessionBroadcastAnnouncedWrapper(void *, const char *);
+  extern "C" void SessionBroadcastCancelledWrapper(void *, const char *);
   extern "C" void SessionConnectionClosedWrapper(void *, const char *);
 
   /// MOQ Session wrapper
   class MOQ_API Session
   {
     friend void SessionDataCallbackWrapper(void *, const char *, const uint8_t *, size_t);
-    friend void SessionBroadcastAnnouncedWrapper(const char *);
-    friend void SessionBroadcastCancelledWrapper(const char *);
+    friend void SessionBroadcastAnnouncedWrapper(void *, const char *);
+    friend void SessionBroadcastCancelledWrapper(void *, const char *);
     friend void SessionConnectionClosedWrapper(void *, const char *);
 
   public:

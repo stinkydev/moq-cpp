@@ -75,9 +75,11 @@ using ConnectionClosedCallback = std::function<void(const std::string &reason)>;
 ### C FFI API:
 ```c
 // New callback types:
-typedef void (*CBroadcastAnnouncedCallback)(const char *path);
-typedef void (*CBroadcastCancelledCallback)(const char *path); 
-typedef void (*CConnectionClosedCallback)(const char *reason);
+// Every callback receives the session handle it belongs to, so the C++ layer
+// can route it to the right Session when several sessions exist.
+typedef void (*CBroadcastAnnouncedCallback)(void *session, const char *path);
+typedef void (*CBroadcastCancelledCallback)(void *session, const char *path);
+typedef void (*CConnectionClosedCallback)(void *session, const char *reason);
 
 // New functions:
 int moq_session_set_broadcast_announced_callback(void *session, CBroadcastAnnouncedCallback callback);

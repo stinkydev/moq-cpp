@@ -73,8 +73,8 @@ pub type CLogCallback = extern "C" fn(*const c_char, c_int, *const c_char);
 pub type CDataCallback = extern "C" fn(*mut CMoqSession, *const c_char, *const u8, usize);
 
 // New callback types for broadcast events and connection status
-pub type CBroadcastAnnouncedCallback = extern "C" fn(*const c_char);
-pub type CBroadcastCancelledCallback = extern "C" fn(*const c_char);
+pub type CBroadcastAnnouncedCallback = extern "C" fn(*mut CMoqSession, *const c_char);
+pub type CBroadcastCancelledCallback = extern "C" fn(*mut CMoqSession, *const c_char);
 pub type CConnectionClosedCallback = extern "C" fn(*mut std::ffi::c_void, *const c_char);
 
 impl From<CLogLevel> for Level {
@@ -755,13 +755,15 @@ pub unsafe extern "C" fn moq_session_set_broadcast_announced_callback(
         *cb = Some(callback);
     }
 
-    // Set up the Rust callback that will call the C callback
+    // Set up the Rust callback that will call the C callback with session context
+    let session_addr = session as usize; // Convert to usize for thread safety
     let c_callback = session_ref.broadcast_announced_callback.clone();
     let rust_callback = Box::new(move |path: &str| {
         if let Ok(guard) = c_callback.read() {
             if let Some(cb) = *guard {
                 let c_path = CString::new(path).unwrap_or_else(|_| CString::new("").unwrap());
-                cb(c_path.as_ptr());
+                let session_ptr = session_addr as *mut CMoqSession;
+                cb(session_ptr, c_path.as_ptr());
             }
         }
     });
@@ -798,13 +800,15 @@ pub unsafe extern "C" fn moq_session_set_broadcast_cancelled_callback(
         *cb = Some(callback);
     }
 
-    // Set up the Rust callback that will call the C callback
+    // Set up the Rust callback that will call the C callback with session context
+    let session_addr = session as usize; // Convert to usize for thread safety
     let c_callback = session_ref.broadcast_cancelled_callback.clone();
     let rust_callback = Box::new(move |path: &str| {
         if let Ok(guard) = c_callback.read() {
             if let Some(cb) = *guard {
                 let c_path = CString::new(path).unwrap_or_else(|_| CString::new("").unwrap());
-                cb(c_path.as_ptr());
+                let session_ptr = session_addr as *mut CMoqSession;
+                cb(session_ptr, c_path.as_ptr());
             }
         }
     });
