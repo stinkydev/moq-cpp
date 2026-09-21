@@ -88,11 +88,14 @@ fn freeing_unconnected_subscribers_stops_their_tasks() {
     assert!(alive_tasks() > baseline);
 
     // Free without Close: the connect is still pending and must be abandoned
-    // well before the 5s connect timeout.
+    // before the 5s connect timeout. The session tasks exit within milliseconds,
+    // but each dropped QUIC connection leaves a quinn driver task in the draining
+    // state for 3 x PTO (about 3s with the initial RTT estimate), so allow for
+    // that while staying under the connect timeout.
     for session in sessions {
         unsafe { moq_session_free(session) };
     }
-    let alive = wait_for_tasks_at_most(baseline, Duration::from_secs(2));
+    let alive = wait_for_tasks_at_most(baseline, Duration::from_secs(4));
     assert!(
         alive <= baseline,
         "{alive} tasks still alive after free, expected at most {baseline}"
