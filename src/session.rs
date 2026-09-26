@@ -4,19 +4,20 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, RwLock};
-use tokio::time::{timeout, Instant};
-use tracing::{debug, error, info, warn, Level};
+use tokio::time::Instant;
+use tracing::{debug, info, warn, Level};
 
 use moq_native::moq_net::{
     self, announce as moq_announce, broadcast as moq_broadcast, group as moq_group,
-    origin as moq_origin, track as moq_track, Origin, Session, Timestamp,
+    origin as moq_origin, track as moq_track, Origin, Timestamp,
 };
-use moq_native::Client;
+use moq_native::{Client, Reconnect, Status as ReconnectStatus};
 
 type BroadcastConsumer = moq_broadcast::Consumer;
 type BroadcastProducer = moq_broadcast::Producer;
 type GroupProducer = moq_group::Producer;
 type OriginConsumer = moq_origin::Consumer;
+type OriginProducer = moq_origin::Producer;
 type TrackInfo = moq_track::Info;
 type TrackConsumer = moq_track::Subscriber;
 type TrackProducer = moq_track::Producer;
@@ -118,7 +119,9 @@ pub type BroadcastCancelledCallback = Box<dyn Fn(&str) + Send + Sync>;
 pub type ConnectionClosedCallback = Box<dyn Fn(&str) + Send + Sync>;
 
 /// A high-level wrapper around moq-native that provides:
-/// - Automatic reconnection for both publish and subscribe sessions
+/// - Automatic reconnection for both publish and subscribe sessions: the origin,
+///   the published broadcast and its tracks live as long as the session, and
+///   moq-native's reconnect loop attaches every new relay connection to them
 /// - Session lifecycle management
 /// - Event notifications
 /// - Easy-to-use API for publishing and subscribing with direct frame operations
@@ -176,9 +179,15 @@ pub struct MoqSession {
 #[derive(Clone)]
 struct SessionState {
     connected: bool,
+    /// Relay connections made so far, the first one and every reconnect.
     connection_attempts: usize,
     last_connection_time: Option<Instant>,
-    current_session: Option<SessionHandle>,
+    /// Why the reconnect loop stopped for good, once it has.
+    last_error: Option<String>,
+    /// The origin every relay connection of this session publishes or subscribes through.
+    origin: Option<OriginProducer>,
+    /// Subscribers: the consumer side of the origin, for requesting broadcasts.
+    origin_consumer: Option<OriginConsumer>,
     broadcast: Option<BroadcastHandle>,
     // Store broadcast consumers for subscribers, keyed by broadcast path.
     broadcast_consumers: HashMap<String, BroadcastConsumer>,
@@ -195,12 +204,6 @@ struct TrackHandle {
 #[derive(Clone)]
 struct BroadcastHandle {
     producer: Option<BroadcastProducer>,
-}
-
-#[derive(Clone)]
-struct SessionHandle {
-    session: Arc<Session>,
-    origin_consumer: Option<OriginConsumer>,
 }
 
 impl MoqSession {
@@ -295,7 +298,7 @@ impl MoqSession {
         tracks: Vec<TrackDefinition>,
         subscribe_all_catalog_tracks: bool,
     ) -> Result<Self> {
-        let mut client_config = config.connection.client_config.clone();
+        let mut client_config = config.connection.resolved_client_config()?;
 
         // Force IPv4 binding on Windows to avoid IPv6 issues
         #[cfg(windows)]
@@ -322,7 +325,9 @@ impl MoqSession {
             connected: false,
             connection_attempts: 0,
             last_connection_time: None,
-            current_session: None,
+            last_error: None,
+            origin: None,
+            origin_consumer: None,
             broadcast: None,
             broadcast_consumers: HashMap::new(),
         }));
@@ -370,251 +375,160 @@ impl MoqSession {
         Ok(session)
     }
 
-    /// Start the session and connect once (no reconnection logic)
+    /// Start the session. The origin, and for a publisher its broadcast, tracks
+    /// and catalog, are set up once; a background loop then keeps a relay
+    /// connection up for as long as the session lives, reconnecting with backoff
+    /// after a drop. Each new connection publishes or subscribes the same origin,
+    /// so tracks, catalog and subscriptions carry over.
     pub async fn start(&self) -> Result<()> {
         session_log!(self, info, "Starting MoQ session: {:?}", self.session_type);
+        if *self.shutdown_rx.borrow() {
+            info!("Shutdown signal received before start, not connecting");
+            return Ok(());
+        }
 
-        let state = self.state.clone();
-        let config = self.config.clone();
-        let client = self.client.clone();
-        let event_tx = self.event_tx.clone();
-        let session_type = self.session_type.clone();
-        let broadcast_name = self.broadcast_name.clone();
-        let mut shutdown_rx = self.shutdown_rx.clone();
-        let announcement_tx = self.announcement_tx.clone();
-        let session_clone = self.clone();
+        let (client, announcement_consumer) = self.prepare_origin().await?;
+        if matches!(self.session_type, SessionType::Publisher) {
+            self.create_track_producers().await?;
+        }
 
-        // Get callback references for announcements
-        let broadcast_announced_cb = self.broadcast_announced_callback.clone();
-        let broadcast_cancelled_cb = self.broadcast_cancelled_callback.clone();
-        let connection_closed_cb = self.connection_closed_callback.clone();
+        let reconnect = client.reconnect(self.config.connection.url.clone());
 
-        tokio::spawn(async move {
-            // Check for shutdown signal before connecting
-            if *shutdown_rx.borrow() {
-                info!("Shutdown signal received before connection, stopping session");
-                return;
-            }
+        if matches!(self.session_type, SessionType::Subscriber) {
+            Self::monitor_announcements(
+                announcement_consumer,
+                self.event_tx.clone(),
+                self.announcement_tx.clone(),
+                self.broadcast_announced_callback.clone(),
+                self.broadcast_cancelled_callback.clone(),
+                self.clone(),
+            )
+            .await;
+        }
 
-            let result = tokio::select! {
-                result = Self::establish_connection(
-                    &config,
-                    &client,
-                    &session_type,
-                    &broadcast_name,
-                    state.clone(),
-                    event_tx.clone(),
-                    announcement_tx.clone(),
-                ) => result,
-                _ = shutdown_requested(&mut shutdown_rx) => {
-                    info!("Shutdown requested while connecting, stopping session");
-                    let mut state_guard = state.write().await;
-                    state_guard.connected = false;
-                    state_guard.current_session = None;
-                    state_guard.broadcast = None;
-                    return;
-                }
-            };
-
-            match result {
-                Ok((session_handle, announcement_consumer)) => {
-                    info!("Successfully established MoQ connection");
-
-                    // Update connection state
-                    {
-                        let mut state_guard = state.write().await;
-                        state_guard.connected = true;
-                        state_guard.connection_attempts = 1;
-                        state_guard.last_connection_time = Some(Instant::now());
-                        state_guard.current_session = Some(session_handle.clone());
-                    }
-
-                    // Create track producers for publisher sessions
-                    if matches!(session_type, SessionType::Publisher) {
-                        let session_for_tracks = session_clone.clone();
-                        if let Err(e) = session_for_tracks.create_track_producers().await {
-                            warn!("Failed to create track producers: {}", e);
-                            let _ = event_tx.send(SessionEvent::Error {
-                                error: format!("Failed to create track producers: {}", e),
-                            });
-                        } else {
-                            debug!("Successfully created track producers");
-                            let _ = event_tx.send(SessionEvent::Connected);
-                        }
-                    } else {
-                        // Send Connected event after successful broadcast subscription
-                        let _ = event_tx.send(SessionEvent::Connected);
-
-                        // Setup announcement monitoring for both publishers and subscribers
-                        Self::monitor_announcements(
-                            announcement_consumer,
-                            event_tx.clone(),
-                            announcement_tx.clone(),
-                            broadcast_announced_cb.clone(),
-                            broadcast_cancelled_cb.clone(),
-                            session_clone.clone(), // Pass session reference for BroadcastSubscriptionManager management
-                            session_handle.session.clone(),
-                        )
-                        .await;
-                    }
-
-                    // Auto-subscription is now handled by BroadcastSubscriptionManager
-                    // Users should call enable_auto_subscription() to set up automatic catalog and track management
-
-                    // Wait for session to close or shutdown signal
-                    let disconnect_reason = tokio::select! {
-                        result = session_handle.session.closed() => {
-                            error!("Session closed: {}", result);
-                            format!("Session closed: {}", result)
-                        }
-                        _ = shutdown_requested(&mut shutdown_rx) => {
-                            info!("Shutdown requested, closing session");
-                            "Shutdown requested".to_string()
-                        }
-                    };
-
-                    // Call connection closed callback if set
-                    let callback_guard = connection_closed_cb.read().await;
-                    if let Some(callback) = callback_guard.as_ref() {
-                        callback(&disconnect_reason);
-                    }
-                    drop(callback_guard);
-
-                    // Send disconnected event
-                    let _ = event_tx.send(SessionEvent::Disconnected {
-                        reason: disconnect_reason,
-                    });
-
-                    // Mark as disconnected and clean up session state
-                    {
-                        let mut state_guard = state.write().await;
-                        state_guard.connected = false;
-                        state_guard.current_session = None;
-                        state_guard.broadcast = None;
-                        state_guard.broadcast_consumers.clear();
-                    }
-
-                    // Clear session state
-                    session_clone.current_groups.write().await.clear();
-                    *session_clone.catalog_published.write().await = false;
-                    session_clone.stop_all_subscription_managers().await;
-
-                    debug!("Session closed and cleaned up");
-                }
-                Err(e) => {
-                    let mut state_guard = state.write().await;
-                    state_guard.connected = false;
-                    state_guard.connection_attempts = 1;
-                    state_guard.current_session = None;
-
-                    error!("Failed to establish connection: {}", e);
-
-                    // Call connection closed callback if set
-                    let callback_guard = connection_closed_cb.read().await;
-                    if let Some(callback) = callback_guard.as_ref() {
-                        callback(&format!("Connection failed: {}", e));
-                    }
-                    drop(callback_guard);
-
-                    let _ = event_tx.send(SessionEvent::Error {
-                        error: format!("Connection failed: {}", e),
-                    });
-
-                    drop(state_guard);
-                }
-            }
-
-            debug!("Session management task terminated");
-        });
-
+        let session = self.clone();
+        tokio::spawn(async move { session.supervise(reconnect).await });
         Ok(())
     }
 
-    async fn establish_connection(
-        config: &SessionConfig,
-        client: &Client,
-        session_type: &SessionType,
-        broadcast_name: &str,
-        state: Arc<RwLock<SessionState>>,
-        _event_tx: mpsc::UnboundedSender<SessionEvent>,
-        _announcement_tx: broadcast::Sender<String>,
-    ) -> Result<(SessionHandle, moq_announce::Consumer)> {
-        debug!("Establishing connection to: {}", config.connection.url);
-
-        let origin = Origin::random().produce();
-
-        let (session_client, origin_consumer, announcement_consumer, broadcast_handle) =
-            match session_type {
-                SessionType::Publisher => {
-                    let broadcast_producer = origin
-                        .create_broadcast(broadcast_name, moq_broadcast::Route::announced())
-                        .context("Failed to create announced broadcast")?;
-
-                    let broadcast_handle = Some(BroadcastHandle {
-                        producer: Some(broadcast_producer),
-                    });
-
-                    (
-                        client.clone().with_publisher(&origin),
-                        None,
-                        origin.consume().announced(),
-                        broadcast_handle,
-                    )
-                }
-                SessionType::Subscriber => {
-                    let scoped_origin = if broadcast_name.is_empty() {
-                        origin.clone()
-                    } else {
-                        let path: moq_net::Path<'_> = broadcast_name.into();
-                        origin.scope(&[path]).ok_or_else(|| {
-                            WrapperError::Session(format!(
-                                "Unable to subscribe to broadcast prefix '{}'",
-                                broadcast_name
-                            ))
-                        })?
-                    };
-                    let origin_consumer = scoped_origin.consume();
-                    let announcement_consumer = origin_consumer.announced();
-
-                    (
-                        client.clone().with_subscriber(scoped_origin.clone()),
-                        Some(origin_consumer),
-                        announcement_consumer,
-                        None,
-                    )
+    /// Follows the reconnect loop's status into the session state until the loop
+    /// gives up or the session shuts down. Dropping the handle stops the loop.
+    async fn supervise(&self, mut reconnect: Reconnect) {
+        let mut shutdown_rx = self.shutdown_rx.clone();
+        let closed_reason = loop {
+            let status = tokio::select! {
+                status = reconnect.status() => status,
+                _ = shutdown_requested(&mut shutdown_rx) => {
+                    info!("Shutdown requested, closing session");
+                    break "Shutdown requested".to_string();
                 }
             };
-
-        let connect_fut = session_client.connect(config.connection.url.clone());
-        let session = if config.connection.connect_timeout.is_zero() {
-            connect_fut.await.context("Failed to connect to relay")?
-        } else {
-            timeout(config.connection.connect_timeout, connect_fut)
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "Connection timed out after {:?}",
-                        config.connection.connect_timeout
-                    )
-                })?
-                .context("Failed to connect to relay")?
+            match status {
+                Ok(ReconnectStatus::Connected) => {
+                    {
+                        let mut state = self.state.write().await;
+                        state.connected = true;
+                        state.connection_attempts += 1;
+                        state.last_connection_time = Some(Instant::now());
+                    }
+                    info!("Connected to {}", self.config.connection.url);
+                    let _ = self.event_tx.send(SessionEvent::Connected);
+                }
+                Ok(ReconnectStatus::Disconnected) => {
+                    self.state.write().await.connected = false;
+                    warn!(
+                        "Connection to {} dropped, reconnecting",
+                        self.config.connection.url
+                    );
+                    let _ = self.event_tx.send(SessionEvent::Disconnected {
+                        reason: "Connection dropped, reconnecting".to_string(),
+                    });
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let reason = format!("Reconnection gave up: {}", e);
+                    warn!("{}", reason);
+                    self.state.write().await.last_error = Some(reason.clone());
+                    let _ = self.event_tx.send(SessionEvent::Error {
+                        error: reason.clone(),
+                    });
+                    break reason;
+                }
+            }
         };
+        drop(reconnect);
 
-        let session_handle = SessionHandle {
-            session: Arc::new(session),
-            origin_consumer,
+        let was_connected = {
+            let mut state = self.state.write().await;
+            let was_connected = state.connected;
+            state.connected = false;
+            was_connected
         };
+        let _ = self.event_tx.send(SessionEvent::Disconnected {
+            reason: closed_reason.clone(),
+        });
 
-        // Store broadcast handle in state if we're a publisher
-        if let Some(broadcast_handle) = broadcast_handle {
-            let mut state_guard = state.write().await;
-            state_guard.broadcast = Some(broadcast_handle);
+        // The connection is gone for good: a loop that gave up, or a shutdown of a
+        // connected session. A drop the loop recovers from is only seen through
+        // is_connected().
+        let shutdown = *self.shutdown_rx.borrow();
+        if !shutdown || was_connected {
+            let callback_guard = self.connection_closed_callback.read().await;
+            if let Some(callback) = callback_guard.as_ref() {
+                callback(&closed_reason);
+            }
         }
+        debug!("Session management task terminated");
+    }
 
-        // For subscribers, we'll start announcement monitoring after connection in start()
-        // to avoid having two consumers competing for the same stream
+    /// Creates the origin every relay connection of this session goes through,
+    /// and the client that attaches connections to it. A publisher's broadcast is
+    /// created here once; a subscriber's broadcasts linger across a drop for
+    /// `broadcast_linger`.
+    async fn prepare_origin(&self) -> Result<(Client, moq_announce::Consumer)> {
+        debug!("Preparing origin for: {}", self.config.connection.url);
+        let mut state = self.state.write().await;
 
-        Ok((session_handle, announcement_consumer))
+        match self.session_type {
+            SessionType::Publisher => {
+                let origin = Origin::random().produce();
+                let broadcast_producer = origin
+                    .create_broadcast(
+                        self.broadcast_name.as_str(),
+                        moq_broadcast::Route::announced(),
+                    )
+                    .context("Failed to create announced broadcast")?;
+                state.broadcast = Some(BroadcastHandle {
+                    producer: Some(broadcast_producer),
+                });
+                let client = self.client.clone().with_publisher(&origin);
+                let announcements = origin.consume().announced();
+                state.origin = Some(origin);
+                Ok((client, announcements))
+            }
+            SessionType::Subscriber => {
+                let origin = Origin::random()
+                    .produce()
+                    .with_linger(self.config.connection.broadcast_linger);
+                let scoped_origin = if self.broadcast_name.is_empty() {
+                    origin.clone()
+                } else {
+                    let path: moq_net::Path<'_> = self.broadcast_name.as_str().into();
+                    origin.scope(&[path]).ok_or_else(|| {
+                        WrapperError::Session(format!(
+                            "Unable to subscribe to broadcast prefix '{}'",
+                            self.broadcast_name
+                        ))
+                    })?
+                };
+                let origin_consumer = scoped_origin.consume();
+                let announcements = origin_consumer.announced();
+                let client = self.client.clone().with_subscriber(scoped_origin);
+                state.origin_consumer = Some(origin_consumer);
+                state.origin = Some(origin);
+                Ok((client, announcements))
+            }
+        }
     }
 
     /// Set up broadcast monitoring with callbacks (called from start method with full session access)
@@ -625,7 +539,6 @@ impl MoqSession {
         broadcast_announced_cb: Arc<RwLock<Option<BroadcastAnnouncedCallback>>>,
         broadcast_cancelled_cb: Arc<RwLock<Option<BroadcastCancelledCallback>>>,
         session: MoqSession, // Add session reference to handle BroadcastSubscriptionManager lifecycle
-        moq_session: Arc<Session>,
     ) {
         let mut shutdown_rx = session.shutdown_rx.clone();
         tokio::spawn(async move {
@@ -636,7 +549,6 @@ impl MoqSession {
                         None => break,
                     },
                     _ = shutdown_requested(&mut shutdown_rx) => break,
-                    _ = moq_session.closed() => break,
                 };
                 let path = update.path.to_string();
                 match update.broadcast {
@@ -714,6 +626,7 @@ impl MoqSession {
             connected: state.connected,
             connection_attempts: state.connection_attempts,
             last_connection_time: state.last_connection_time,
+            last_error: state.last_error.clone(),
         }
     }
 
@@ -945,8 +858,11 @@ impl MoqSession {
 #[derive(Clone, Debug)]
 pub struct ConnectionInfo {
     pub connected: bool,
+    /// Relay connections made so far, the first one and every reconnect.
     pub connection_attempts: usize,
     pub last_connection_time: Option<Instant>,
+    /// Why the reconnect loop stopped for good, once it has.
+    pub last_error: Option<String>,
 }
 
 /// Publisher-specific functionality
@@ -1311,7 +1227,8 @@ impl MoqSession {
         {
             let mut state = self.state.write().await;
             state.connected = false;
-            state.current_session = None;
+            state.origin = None;
+            state.origin_consumer = None;
             state.broadcast = None;
             state.broadcast_consumers.clear();
         }
@@ -1340,17 +1257,16 @@ impl MoqSession {
             broadcast_name
         );
 
-        let mut state = self.state.write().await;
-        let session_handle = state
-            .current_session
-            .as_ref()
-            .ok_or_else(|| WrapperError::Session("Not connected".to_string()))?;
-
         if !matches!(self.session_type, SessionType::Subscriber) {
             return Err(WrapperError::Session("Not a subscriber session".to_string()).into());
         }
 
-        if let Some(origin_consumer) = &session_handle.origin_consumer {
+        let mut state = self.state.write().await;
+        if !state.connected {
+            return Err(WrapperError::Session("Not connected".to_string()).into());
+        }
+
+        if let Some(origin_consumer) = &state.origin_consumer.clone() {
             let broadcast_consumer = origin_consumer
                 .request_broadcast(broadcast_name)
                 .await

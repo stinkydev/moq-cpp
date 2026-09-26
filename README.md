@@ -358,6 +358,25 @@ static std::unique_ptr<Session> CreateRoomSubscriber(const std::string& url, con
 - **Room subscriptions** - data callbacks identify the broadcast path in room mode
 - **Catalog track subscriptions** - opt into all tracks from `catalog.json`
 
+## Reconnection
+
+A session keeps its relay connection up for as long as it lives. When the
+connection drops, or the relay is not reachable when the session starts, it
+reconnects with exponential backoff (`reconnect_delay` up to
+`max_reconnect_delay`), forever by default (`reconnect_timeout` of zero).
+
+- **Publishers** keep their broadcast, tracks and catalog; each new connection
+  announces them again. Writes fail while `is_connected()` is false.
+- **Subscribers** lose their broadcasts on a drop and subscribe again when the
+  reconnected relay announces them. `broadcast_linger` keeps them announced
+  across a short drop instead, at the cost of keeping a closed session's
+  broadcasts alive for that long.
+- **Connection closed** callbacks fire only when the connection is gone for
+  good: the session gave up, or it was closed while connected.
+
+A dead network is noticed through the QUIC idle timeout (30 s with a 5 s
+keep-alive by default, see `client_config.quic`).
+
 ## Thread Safety
 
 - **Rust**: All public APIs are Send + Sync safe - use from any async context
@@ -442,7 +461,7 @@ if (session->WriteFrame("track", data.c_str(), data.size(), true)) {
 - Data callbacks
 - Broadcast announced callbacks
 - Broadcast cancelled callbacks
-- Connection closed callbacks
+- Connection closed callbacks (the connection is gone for good)
 
 ## Contributing
 

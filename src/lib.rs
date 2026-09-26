@@ -28,6 +28,7 @@ pub use moq_native::moq_net::track::{
 // Re-export tracing types for logging
 use anyhow::Result;
 use std::sync::Once;
+use tracing::warn;
 pub use tracing::Level;
 
 static TRACING_INIT: Once = Once::new();
@@ -66,9 +67,19 @@ pub async fn create_publisher(
 ) -> Result<MoqSession, WrapperError> {
     let url = url::Url::parse(url)
         .map_err(|e| WrapperError::InvalidConfig(format!("Invalid URL: {}", e)))?;
-
-    let url_display = url.to_string();
     let config = SessionConfig::new(broadcast_name, url);
+    create_publisher_with_config(config, broadcast_name, tracks, catalog_type).await
+}
+
+/// Create a publisher session from a full configuration, for callers that need
+/// more than the URL (TLS options, backoff, timeouts)
+pub async fn create_publisher_with_config(
+    config: SessionConfig,
+    broadcast_name: &str,
+    tracks: Vec<TrackDefinition>,
+    catalog_type: CatalogType,
+) -> Result<MoqSession, WrapperError> {
+    let url_display = config.connection.url.to_string();
     let connect_timeout = config.connection.connect_timeout;
     let session = MoqSession::publisher(
         config,
@@ -80,10 +91,10 @@ pub async fn create_publisher(
 
     session.start().await?;
 
-    // Wait for the initial connection attempt to resolve (track producers are
-    // created automatically once connected). The connection task records its
-    // outcome in connection_attempts, so a failed attempt returns an error
-    // instead of polling forever against an unreachable relay.
+    // Give the first connection a moment so early writes are not dropped. A relay
+    // that is not reachable yet does not fail the session: the reconnect loop
+    // keeps trying, and writes succeed once is_connected() turns true. Only a
+    // loop that gave up for good (a rejected token, a refusing relay) is an error.
     use tokio::time::{sleep, timeout, Duration};
     let wait_for_connection = async {
         loop {
@@ -91,32 +102,27 @@ pub async fn create_publisher(
             if info.connected {
                 return Ok(());
             }
-            if info.connection_attempts > 0 {
-                return Err(WrapperError::Session(format!(
-                    "Failed to establish initial connection to {}",
-                    url_display
+            if let Some(error) = info.last_error {
+                return Err(WrapperError::ReconnectionFailed(format!(
+                    "{}: {}",
+                    url_display, error
                 )));
             }
             sleep(Duration::from_millis(100)).await;
         }
     };
 
-    if connect_timeout.is_zero() {
-        wait_for_connection.await?;
+    let wait = if connect_timeout.is_zero() {
+        Duration::from_secs(10)
     } else {
-        // connect_timeout only bounds the QUIC dial, not the MoQ handshake
-        // after it, so cap the total wait as well.
-        timeout(
-            connect_timeout + Duration::from_secs(5),
-            wait_for_connection,
-        )
-        .await
-        .map_err(|_| {
-            WrapperError::Session(format!(
-                "Timed out establishing initial connection to {}",
-                url_display
-            ))
-        })??;
+        connect_timeout + Duration::from_secs(5)
+    };
+    match timeout(wait, wait_for_connection).await {
+        Ok(result) => result?,
+        Err(_) => warn!(
+            "Not connected to {} yet, the session keeps retrying in the background",
+            url_display
+        ),
     }
 
     Ok(session)

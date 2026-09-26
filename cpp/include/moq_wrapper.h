@@ -110,13 +110,18 @@ namespace moq
     friend void SessionConnectionClosedWrapper(void *, const char *);
 
   public:
-    /// Create a publisher session
+    /// Create a publisher session. It keeps a relay connection up for as long as
+    /// it lives: a dropped connection, or a relay not reachable yet, is retried
+    /// with backoff, and the broadcast and its tracks carry over to every new
+    /// connection. Returns null only for bad arguments or a relay that refuses
+    /// for good (a rejected token).
     static std::unique_ptr<Session> CreatePublisher(
         const std::string &url, const std::string &broadcast_name,
         const std::vector<TrackDefinition> &tracks,
         CatalogType catalog_type = CatalogType::kNone);
 
-    /// Create a subscriber session
+    /// Create a subscriber session. Reconnects like a publisher; subscriptions are
+    /// made again when the broadcast is announced on the new connection.
     static std::unique_ptr<Session> CreateSubscriber(
         const std::string &url, const std::string &broadcast_name,
         const std::vector<TrackDefinition> &tracks,
@@ -146,7 +151,9 @@ namespace moq
     /// Set callback for when a broadcast is cancelled
     bool SetBroadcastCancelledCallback(const BroadcastCancelledCallback &callback);
 
-    /// Set callback for when connection is closed
+    /// Set callback for when the connection is closed for good: the session gave
+    /// up reconnecting, or was closed while connected. A drop the session
+    /// reconnects from is only seen through IsConnected().
     bool SetConnectionClosedCallback(const ConnectionClosedCallback &callback);
 
     /// Write a frame to a track, optionally starting a new group
@@ -167,7 +174,8 @@ namespace moq
     /// @param size Size of the data
     bool PublishData(const std::string &track_name, const uint8_t *data, size_t size);
 
-    /// Check if session is connected
+    /// Whether a relay connection is up right now. Turns false on a drop and true
+    /// again once the session has reconnected; writes fail while it is false.
     bool IsConnected() const;
 
     /// Close the session
